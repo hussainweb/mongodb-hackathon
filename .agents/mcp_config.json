@@ -18,7 +18,7 @@
       "command": "sh",
       "args": [
         "-c",
-        "set -a && [ -f .env ] && . ./.env; set +a && exec npx -y mongodb-atlas-mcp-remote@latest"
+        "set -a && [ -f .env ] && . ./.env; set +a && exec npx -y mongodb-mcp-server@latest"
       ]
     }
   }

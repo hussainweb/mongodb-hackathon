@@ -6,6 +6,9 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+.env
+.env.*
+!.env.example
 
 # Beads / Dolt files (added by bd init)
 .dolt/

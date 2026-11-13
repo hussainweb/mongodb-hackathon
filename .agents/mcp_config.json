@@ -13,6 +13,13 @@
         "antigravity",
         "--project-from-cwd"
       ]
+    },
+    "mongodb": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mongodb-atlas-mcp-remote@latest"
+      ]
     }
   }
 }

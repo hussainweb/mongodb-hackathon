@@ -15,10 +15,10 @@
       ]
     },
     "mongodb": {
-      "command": "npx",
+      "command": "sh",
       "args": [
-        "-y",
-        "mongodb-atlas-mcp-remote@latest"
+        "-c",
+        "set -a && [ -f .env ] && . ./.env; set +a && exec npx -y mongodb-atlas-mcp-remote@latest"
       ]
     }
   }

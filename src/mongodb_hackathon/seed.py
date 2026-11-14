@@ -36,29 +36,6 @@ STARTER_REPOS: list[dict[str, Any]] = [
             "Scale billing-worker containers to 2 replicas with canary max_rps=150 and verify live health."
         ),
     },
-    {
-        "repo": "dry-run/payments-webhook",
-        "label": "Payments Webhook (Dry-Run)",
-        "description": (
-            "High-throughput payment webhook relay and rate-limited deployment pipeline (local dry-run)."
-        ),
-        "is_live": False,
-        "default_prompt": (
-            "Enable resilient rate limiter on /v1/deployments callback webhook with safe "
-            "rate_limit=300 and verify downstream acceptance."
-        ),
-    },
-    {
-        "repo": "dry-run/billing-worker",
-        "label": "Billing Worker (Dry-Run)",
-        "description": (
-            "Async invoice and billing reconciliation worker with strict staging concurrency caps (local dry-run)."
-        ),
-        "is_live": False,
-        "default_prompt": (
-            "Harden billing worker retry backoff and verify deployment health before promoting release."
-        ),
-    },
 ]
 
 REPO_RULES: list[dict[str, Any]] = [
@@ -91,36 +68,6 @@ REPO_RULES: list[dict[str, Any]] = [
             "and verify Docker container health before opening PR."
         ),
         "field_mapping": {"tf_dir": "deploy/tf", "rate_limit_max": "150"},
-    },
-    {
-        "memory_id": "rule-payments-webhook-rate-limit",
-        "kind": "repo_rule",
-        "source_repo": "dry-run/payments-webhook",
-        "title": "Payments Webhook: cap staging rate_limit <= 300 and verify callback URI",
-        "content": (
-            "Repo rule for dry-run/payments-webhook: staging webhook deployments must cap "
-            "rate_limit <= 300 (or max_rps <= 300) and route callbacks through verified ingest URI."
-        ),
-        "resolution": (
-            "Configure service_config.json with service_name='payments-webhook', rate_limit=300, "
-            "and verify downstream active=true before opening PR."
-        ),
-        "field_mapping": {"service_name": "payments-webhook", "rate_limit_max": "300"},
-    },
-    {
-        "memory_id": "rule-billing-worker-canary-batch",
-        "kind": "repo_rule",
-        "source_repo": "dry-run/billing-worker",
-        "title": "Billing Worker: enforce canary batch limit 150 and idempotent verification",
-        "content": (
-            "Repo rule for dry-run/billing-worker: billing reconciliation jobs must use conservative "
-            "rate_limit=150, service_name='billing-worker', and confirm active=true before issue close."
-        ),
-        "resolution": (
-            "Set service_name='billing-worker' and conservative rate_limit=150 in service_config.json, "
-            "and verify GET /verify/{deployment_id} returns active=true."
-        ),
-        "field_mapping": {"service_name": "billing-worker", "rate_limit_max": "150"},
     },
 ]
 
@@ -305,6 +252,9 @@ async def seed_atlas(store: MongoStore | None = None) -> dict[str, Any]:
             or Settings().github_sandbox_repo.strip()
         )
         starter_repos, repo_rules = _build_starter_repos(sandbox_repo)
+        await db_store.repos.delete_many(
+            {"repo": {"$in": ["dry-run/payments-webhook", "dry-run/billing-worker"]}}
+        )
         for repo_entry in starter_repos:
             await db_store.upsert_repo(repo_entry)
 

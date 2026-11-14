@@ -94,7 +94,7 @@ async def test_demo_repo_crud_and_seed_shapes(atlas_store: MongoStore) -> None:
     # Verify seed definitions use global '*' for drift playbooks and distinct repo rules.
     assert all(pb["source_repo"] == "*" for pb in DRIFT_PLAYBOOKS)
     starter_names = {item["repo"] for item in STARTER_REPOS}
-    assert {"dry-run/payments-webhook", "dry-run/billing-worker"} <= starter_names
+    assert {"dry-run/payments-infra", "dry-run/billing-stack"} <= starter_names
     assert len({r["source_repo"] for r in REPO_RULES}) >= 2
 
     built_repos, built_rules = _build_starter_repos("octocat/finishline-live")

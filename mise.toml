@@ -1,0 +1,40 @@
+[tasks.server]
+description = "Run FinishLine Control Room (:8000) and Target Service (:8001)"
+alias = ["web", "serve"]
+run = "uv run mongodb-hackathon"
+
+[tasks.walkthrough]
+description = "Serve the architecture walkthrough on 0.0.0.0:${WALKTHROUGH_PORT:-8090}"
+run = 'python3 -m http.server "${WALKTHROUGH_PORT:-8090}" --bind 0.0.0.0 --directory docs/walkthrough'
+
+[tasks.sync]
+description = "Sync Python dependencies with uv"
+run = "uv sync"
+
+[tasks.seed]
+description = "Seed MongoDB Atlas collections, Vector Search index, and starter repos/rules"
+run = "uv run python -m mongodb_hackathon.seed"
+
+[tasks.lint]
+description = "Run Ruff linter"
+run = "uv run ruff check ."
+
+[tasks.typecheck]
+description = "Run ty type checker"
+run = "uv run ty check"
+
+[tasks.test]
+description = "Run pytest test suite"
+run = "uv run pytest -v"
+
+[tasks.check]
+description = "Run lint, typecheck, and pytest in sequence"
+run = [
+  "uv run ruff check .",
+  "uv run ty check",
+  "uv run pytest -v",
+]
+
+[tasks.evals]
+description = "Run LangSmith evaluation suite"
+run = "uv run python scripts/run_evals.py"

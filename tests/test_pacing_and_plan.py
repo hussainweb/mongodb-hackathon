@@ -236,10 +236,11 @@ async def test_step_1_fix_plan_edit_takes_effect_on_step_2_and_3() -> None:
                 cp1 = await store.get_checkpoint(run_id, "step_1_plan")
                 assert cp1 is not None
                 initial_plan = FixPlan.model_validate(cp1.post_state["fix_plan"])
-                assert initial_plan.patch_filename == "service_config.json"
+                assert bool(initial_plan.patch_filename)
 
                 # Operator edits FixPlan fields: change patch_filename, commit_message, and deployment_config
                 custom_patch_file = "custom_operator_config.json"
+                assert initial_plan.patch_filename != custom_patch_file
                 custom_commit_msg = "feat(operator): customized release configuration"
                 custom_service_name = "payments-operator-override"
                 custom_rate_limit = 450

@@ -88,6 +88,29 @@ async def test_standalone_pages_and_navigation() -> None:
                 assert "live-run-strip" in r_home.text
                 assert test_run_id in r_home.text
 
+                # Workspace prompt-first UI elements
+                assert 'id="prompt-input"' in r_home.text
+                assert 'id="repo-select"' in r_home.text
+                assert 'id="pacing-control"' in r_home.text
+                assert "Demo 0.5s" in r_home.text
+                assert "Step-by-Step" in r_home.text
+                assert "Fast 0.1s" in r_home.text
+                assert "Slow 2.5s" in r_home.text
+                assert "Run Release Closer" in r_home.text
+
+                # Timeline, Breakpoints & Actions
+                assert 'id="step-list"' in r_home.text
+                assert 'id="pause-banner"' in r_home.text
+                assert 'id="plan-review-drawer"' in r_home.text
+                assert 'id="plan-patch-filename"' in r_home.text
+                assert 'id="approval-banner"' in r_home.text
+
+                # Binding decision: no chaos toggles or raw firehoses on GET /
+                assert "Target Chaos Mode" not in r_home.text
+                assert "silent_drop_202" not in r_home.text
+                assert "drift_v2" not in r_home.text
+                assert "/chaos/" not in r_home.text
+
                 # 2. Infrastructure page (GET /infra)
                 r_infra = await ac.get("/infra")
                 assert r_infra.status_code == 200
@@ -197,6 +220,76 @@ async def test_active_run_api_and_sse_stream() -> None:
     finally:
         await store.runs.delete_many({"run_id": run_id})
         await store.events.delete_many({"run_id": run_id})
+        if hasattr(ctrl_mod.app.state, "_external_store"):
+            delattr(ctrl_mod.app.state, "_external_store")
+        await store.close()
+        target_state.reset()
+
+
+@pytest.mark.asyncio
+async def test_workspace_prompt_composer_and_pacing_presets() -> None:
+    """Verify GET / renders Linear-inspired prompt composer, repo selector, and demo pacing."""
+    target_state.reset()
+    store = MongoStore(Settings())
+    await store.ensure_schema_and_indexes()
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=target_app), base_url="http://test-target"
+        ) as tc:
+            ctrl_mod.app.state._external_store = True
+            ctrl_mod.app.state.store = store
+            gh_cfg = Settings()
+            gh_cfg.github_sandbox_repo = "dry-run/finishline-demo-sandbox"
+            ctrl_mod.app.state.settings = gh_cfg
+            ctrl_mod.app.state.github = GitHubSandboxAdapter(gh_cfg, token="")
+            ctrl_mod.app.state.target_client = tc
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=ctrl_mod.app),
+                base_url="http://test-control",
+            ) as ac:
+                resp = await ac.get("/")
+                assert resp.status_code == 200
+                html = resp.text
+
+                # 1. Prompt Composer Card elements
+                assert 'id="prompt-input"' in html
+                assert 'id="repo-select"' in html
+                assert 'id="repo-mode-badge"' in html
+                assert 'id="repo-rules-badge"' in html
+                assert 'id="btn-toggle-add-repo"' in html
+                assert 'id="add-repo-form"' in html
+                assert 'id="example-chips"' in html
+
+                # 2. Pacing segmented control with Demo 0.5s active by default
+                assert 'id="pacing-control"' in html
+                assert 'class="active" data-pacing="demo"' in html
+                assert "Demo 0.5s" in html
+                assert "Step-by-Step" in html
+                assert "Fast 0.1s" in html
+                assert "Slow 2.5s" in html
+                assert 'id="btn-run-closer"' in html
+
+                # 3. Execution timeline & breakpoint banner
+                assert 'id="step-list"' in html
+                assert 'id="pause-banner"' in html
+                assert 'id="plan-review-drawer"' in html
+                assert 'id="btn-advance-step"' in html
+                assert 'id="btn-save-plan"' in html
+                assert 'id="btn-replan"' in html
+
+                # 4. Human Approval
+                assert 'id="approval-banner"' in html
+                assert 'id="record-btn"' in html
+                assert 'id="briefing-audio"' in html
+
+                # 5. No target chaos controls on GET /
+                assert "Target Chaos Mode" not in html
+                assert "/chaos/" not in html
+                assert "silent_drop_202" not in html
+                assert "drift_v2" not in html
+    finally:
         if hasattr(ctrl_mod.app.state, "_external_store"):
             delattr(ctrl_mod.app.state, "_external_store")
         await store.close()

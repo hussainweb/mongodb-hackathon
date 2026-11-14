@@ -187,12 +187,17 @@ async def test_search_experience_source_repo_isolation_and_invalidation(
         # Invalidating mem_a_id excludes it from subsequent search_experience calls.
         modified = await atlas_store.invalidate_memory(mem_a_id)
         assert modified == 1
-        res_a_after = await atlas_store.search_experience(
-            "webhook rate limit staging",
-            kind="repo_rule",
-            limit=10,
-            source_repo=repo_a,
-        )
+        res_a_after: list[dict[str, Any]] = []
+        for _ in range(10):
+            res_a_after = await atlas_store.search_experience(
+                "webhook rate limit staging",
+                kind="repo_rule",
+                limit=10,
+                source_repo=repo_a,
+            )
+            if mem_a_id not in [m["memory_id"] for m in res_a_after]:
+                break
+            await asyncio.sleep(0.5)
         assert mem_a_id not in [m["memory_id"] for m in res_a_after]
     finally:
         await atlas_store.memories.delete_many(

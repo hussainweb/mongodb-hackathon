@@ -39,7 +39,7 @@ from mongodb_hackathon.models import (
     utc_now,
 )
 from mongodb_hackathon.mongo import MongoStore
-from mongodb_hackathon.seed import seed_atlas
+from mongodb_hackathon.seed import _build_starter_repos, seed_atlas
 from mongodb_hackathon.voice import transcribe_operator_audio
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -290,17 +290,57 @@ async def _resolve_active_run_id(
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
-    """Render the FinishLine Operator & Chaos Control Room Workspace page."""
+    """Render the prompt-first FinishLine Release Closer Workspace page."""
     store, github, http, settings = _deps(request)
     runs = await store.list_runs(limit=15)
     target = await _fetch_target_state(http)
     memories = await store.list_memories(limit=12)
 
     repo = settings.github_sandbox_repo.strip()
+
+    repos = await store.list_repos()
+    if not repos:
+        starter_repos, _ = _build_starter_repos(
+            repo or "dry-run/finishline-demo-sandbox"
+        )
+        repos = starter_repos
+
+    rule_counts: dict[str, int] = {}
+    try:
+        agg_cursor = await store.memories.aggregate(
+            [
+                {"$match": {"status": "active"}},
+                {"$group": {"_id": "$source_repo", "count": {"$sum": 1}}},
+            ]
+        )
+        async for doc in agg_cursor:
+            rule_counts[str(doc.get("_id", ""))] = int(doc.get("count", 0))
+    except (PyMongoError, RuntimeError):
+        all_memories = await store.list_memories(limit=100)
+        for m in all_memories:
+            if m.get("status") == "active":
+                sr = str(m.get("source_repo", ""))
+                rule_counts[sr] = rule_counts.get(sr, 0) + 1
+
+    repos_data: list[dict[str, Any]] = []
+    for r in repos:
+        d = r.model_dump(mode="json")
+        d["active_rules_count"] = rule_counts.get(r.repo, 0)
+        repos_data.append(d)
+
+    requested_repo = request.query_params.get("repo", "").strip()
+    selected_repo = requested_repo or (
+        repos[0].repo if repos else repo or "dry-run/finishline-demo-sandbox"
+    )
+
     issues: list[dict[str, Any]] = []
-    if github.has_token and repo:
+    if (
+        github.has_token
+        and selected_repo
+        and not selected_repo.startswith("dry-run/")
+    ):
         try:
-            issues = await github.list_open_issues(repo, limit=8)
+            issues = await github.list_open_issues(selected_repo, limit=8)
         except (httpx.HTTPError, OSError, RuntimeError):
             issues = []
     if not issues:
@@ -319,12 +359,14 @@ async def index(request: Request) -> HTMLResponse:
         {
             "active_page": "workspace",
             "sandbox_repo": repo or "dry-run/finishline-demo-sandbox",
+            "selected_repo": selected_repo,
             "has_github_token": github.has_token,
+            "repos": repos_data,
+            "repo_rule_counts": rule_counts,
             "runs": [r.model_dump(mode="json") for r in runs],
             "issues": issues,
             "memories": memories,
             "target": target,
-            "chaos_modes": [m.value for m in ChaosMode],
             "initial_run_id": initial_run_id,
             "initial_snapshot": initial_snapshot,
         },

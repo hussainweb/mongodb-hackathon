@@ -3,56 +3,127 @@
 {% block title %}Workspace — FinishLine{% endblock %}
 
 {% block content %}
-<div class="page-header" style="margin-bottom: 8px;">
-  <div>
-    <h1 class="page-title">Release Closer Workspace</h1>
-    <div class="page-subtitle">Select a GitHub issue or free-form release goal, run autonomous verification, and observe step checkpoints.</div>
+<div class="workspace-layout">
+  <div class="page-header" style="margin-bottom: 0; padding-bottom: 16px;">
+    <div>
+      <h1 class="page-title">Release Closer Workspace</h1>
+      <div class="page-subtitle">Autonomous release verification, MongoDB Atlas checkpoints, and crash recovery.</div>
+    </div>
+    <div style="display: flex; gap: 12px; align-items: center;">
+      <a href="/infra" class="nav-ext" target="_blank" title="Inspect target microservice &amp; chaos injection">Target Infra ↗</a>
+      <a href="/store" class="nav-ext" target="_blank" title="Inspect Atlas Vector Search experience &amp; events">Atlas Store ↗</a>
+    </div>
   </div>
-  <div style="display: flex; align-items: center; gap: 8px;">
-    {% if sandbox_repo.startswith('dry-run/') %}
-      <button class="btn btn-sm" onclick="bootstrapSandbox()">Connect GitHub Sandbox</button>
-    {% endif %}
-  </div>
-</div>
 
-<section class="launch-bar" aria-label="Launch Release Closer">
-  <select id="issue-select" aria-label="GitHub Issue">
-    {% for iss in issues %}
-      <option
-        value="{{ iss.number }}"
-        data-title="{{ iss.title }}"
-        data-body="{{ iss.body }}"
-      >#{{ iss.number }} · {{ iss.title }}</option>
-    {% endfor %}
-  </select>
-  <button class="btn btn-primary" onclick="startRun()">Run Release Closer</button>
-  <select id="run-selector" aria-label="Active Run" style="max-width: 240px;" onchange="switchRun(this.value)">
-    {% if not runs %}
-      <option value="">No runs yet</option>
-    {% endif %}
-    {% for r in runs %}
-      <option value="{{ r.run_id }}" {% if r.run_id == initial_run_id %}selected{% endif %}>
-        {{ r.run_id }} · #{{ r.issue_number }} ({{ r.status }})
-      </option>
-    {% endfor %}
-  </select>
-</section>
+  <!-- Prompt Composer Card -->
+  <section class="surface composer-card" aria-label="Release Prompt Composer">
+    <div class="repo-bar">
+      <span class="composer-label">Repository:</span>
+      <select id="repo-select" aria-label="Select Repository" onchange="onRepoChange(this.value)">
+        {% for r in repos %}
+          <option
+            value="{{ r.repo }}"
+            data-live="{{ 'true' if r.is_live else 'false' }}"
+            data-prompt="{{ r.default_prompt | e }}"
+            data-rules="{{ r.active_rules_count | default(0) }}"
+            {% if r.repo == selected_repo %}selected{% endif %}
+          >{{ r.label or r.repo }}</option>
+        {% endfor %}
+      </select>
 
-<div class="workspace">
-  <section class="surface">
+      <span id="repo-mode-badge" class="badge {% if selected_repo.startswith('dry-run/') %}badge-neutral{% else %}badge-ok{% endif %}">
+        {% if selected_repo.startswith('dry-run/') %}Dry-Run Sandbox{% else %}Live GitHub{% endif %}
+      </span>
+
+      <a id="repo-rules-badge" href="/store?repo={{ selected_repo | urlencode }}" target="_blank" class="badge badge-mongo" title="Inspect Vector Search rules in MongoDB Atlas">
+        {{ repo_rule_counts.get(selected_repo, 0) }} repo rules active · Inspect ↗
+      </a>
+
+      <button type="button" class="btn btn-sm btn-ghost" id="btn-toggle-add-repo" onclick="toggleAddRepo()">+ Add Repo</button>
+    </div>
+
+    <!-- Inline Add Repo Drawer -->
+    <div id="add-repo-form" class="add-repo-form hidden">
+      <div style="font-weight: 600; font-size: 12.5px; color: var(--text);">Register New Repository in MongoDB Atlas</div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <input type="text" id="add-repo-slug" placeholder="owner/repo (e.g. acme/payments-api)" style="flex: 1; min-width: 220px;" />
+        <input type="text" id="add-repo-label" placeholder="Display label (optional)" style="flex: 1; min-width: 180px;" />
+      </div>
+      <div style="display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-top: 4px;">
+        <label style="font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+          <input type="checkbox" id="add-repo-create-sandbox" /> Ensure GitHub sandbox repo via API
+        </label>
+        <div style="display: flex; gap: 6px; align-items: center;">
+          <span id="add-repo-status" class="mono" style="font-size: 11.5px; color: var(--muted);"></span>
+          <button type="button" class="btn btn-sm btn-ghost" onclick="toggleAddRepo(false)">Cancel</button>
+          <button type="button" class="btn btn-sm btn-primary" onclick="submitAddRepo()">Save Repo</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Free-Form Prompt Textarea -->
+    <div class="prompt-wrap" style="margin-top: 14px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <label for="prompt-input" style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted);">Release Goal / Issue Prompt</label>
+        <span id="prompt-indicator" class="prompt-indicator">Custom Release Goal (issue #0)</span>
+      </div>
+      <textarea id="prompt-input" rows="3" placeholder="Describe the release issue, fix goal, or deployment requirements to verify..." oninput="onPromptInput()"></textarea>
+    </div>
+
+    <!-- Editable Starter Example Chips -->
+    <div style="margin-top: 10px;">
+      <div style="font-size: 11.5px; color: var(--muted); margin-bottom: 6px; font-weight: 500;">Starter Examples (click to load &amp; edit freely):</div>
+      <div id="example-chips" class="chips-row">
+        <!-- Rendered by JavaScript based on selected repo & issues -->
+      </div>
+    </div>
+
+    <!-- Pacing Segmented Control & Run Button -->
+    <div class="pacing-bar">
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+        <span style="font-size: 12px; font-weight: 500; color: var(--muted);">Pacing:</span>
+        <div class="segmented" id="pacing-control" role="radiogroup" aria-label="Execution Pacing">
+          <button type="button" data-pacing="fast" onclick="setPacing('fast')">Fast 0.1s</button>
+          <button type="button" class="active" data-pacing="demo" onclick="setPacing('demo')">Demo 0.5s</button>
+          <button type="button" data-pacing="slow" onclick="setPacing('slow')">Slow 2.5s</button>
+          <button type="button" data-pacing="step" onclick="setPacing('step')">Step-by-Step</button>
+        </div>
+      </div>
+      <button id="btn-run-closer" class="btn btn-primary" onclick="startRun()">Run Release Closer</button>
+    </div>
+  </section>
+
+  <!-- Execution Timeline Card -->
+  <section class="surface timeline-card" aria-label="Execution Timeline">
     <div class="section-head">
       <div>
-        <h2>Verification Pipeline</h2>
-        <div class="section-head-desc">Autonomous multi-step release verification workflow.</div>
+        <h2>Execution &amp; Verification Pipeline</h2>
+        <div class="section-head-desc">Autonomous 5-step release verification workflow backed by MongoDB Atlas checkpoints.</div>
       </div>
-      <span id="run-status-badge" class="badge badge-neutral">No Run Selected</span>
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+        <select id="run-selector" aria-label="Active Run" style="max-width: 280px;" onchange="switchRun(this.value)">
+          {% if not runs %}
+            <option value="">No runs yet</option>
+          {% endif %}
+          {% for r in runs %}
+            <option value="{{ r.run_id }}" {% if r.run_id == initial_run_id %}selected{% endif %}>
+              {{ r.run_id }} · #{{ r.issue_number }} ({{ r.status }})
+            </option>
+          {% endfor %}
+        </select>
+        <span id="run-status-badge" class="badge badge-neutral">No Run Selected</span>
+      </div>
     </div>
 
     <div class="run-controls">
       <div class="run-meta">
         <span>PID: <code id="kpi-pid" class="mono">—</code></span>
         <span>Deployments: <strong id="kpi-deps">0</strong></span>
+        <span>Mode: <span id="run-mode-badge" class="badge badge-neutral">auto</span></span>
         <span id="run-pr-link"></span>
+        <span style="color: var(--border-strong);">|</span>
+        <a href="/infra" target="_blank" class="nav-ext" style="font-weight: 500;">Target Infra ↗</a>
+        <a href="/store" target="_blank" class="nav-ext" style="font-weight: 500;">Atlas Store ↗</a>
       </div>
       <div class="action-group">
         <button id="btn-kill" class="btn btn-danger btn-sm hidden" onclick="killWorker()">SIGKILL Worker</button>
@@ -61,6 +132,55 @@
       </div>
     </div>
 
+    <!-- Paused-at-Checkpoint Banner -->
+    <div id="pause-banner" class="pause-banner">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 18px;">⏸</span>
+          <div>
+            <strong id="pause-title" style="font-size: 13.5px; color: var(--text);">Step Breakpoint Paused</strong>
+            <div id="pause-subtitle" style="font-size: 12px; color: var(--muted);">Worker paused at MongoDB checkpoint. Inspect state or advance when ready.</div>
+          </div>
+        </div>
+        <button id="btn-advance-step" class="btn btn-ok" onclick="advanceStep()">Next Step →</button>
+      </div>
+
+      <!-- Plan Review Drawer (Step 1 Breakpoint) -->
+      <div id="plan-review-drawer" class="plan-drawer hidden">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <strong style="font-size: 12.5px; color: var(--text);">Operator Plan Review &amp; Edit (Step 1 Checkpoint)</strong>
+          <span class="badge badge-mongo" style="font-size: 11px;">Atlas Vector Search FixPlan</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <div>
+            <label for="plan-patch-filename" style="font-size: 11.5px; color: var(--muted); display: block; margin-bottom: 2px;">Patch Filename</label>
+            <input type="text" id="plan-patch-filename" style="width: 100%; font-family: var(--font-mono); font-size: 12px;" />
+          </div>
+          <div>
+            <label for="plan-rate-limit" style="font-size: 11.5px; color: var(--muted); display: block; margin-bottom: 2px;">Rate Limit (RPS)</label>
+            <input type="number" id="plan-rate-limit" style="width: 100%; font-size: 12px;" min="1" max="10000" />
+          </div>
+        </div>
+        <div>
+          <label for="plan-pr-title" style="font-size: 11.5px; color: var(--muted); display: block; margin-bottom: 2px;">PR Title</label>
+          <input type="text" id="plan-pr-title" style="width: 100%; font-size: 12px;" />
+        </div>
+        <div>
+          <label for="plan-patch-content" style="font-size: 11.5px; color: var(--muted); display: block; margin-bottom: 2px;">Patch Content (service_config.json)</label>
+          <textarea id="plan-patch-content" rows="4" style="width: 100%; font-family: var(--font-mono); font-size: 12px; line-height: 1.4; resize: vertical;"></textarea>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <button type="button" id="btn-save-plan" class="btn btn-sm btn-primary" onclick="savePlan()">Save Plan to Atlas</button>
+          <div style="display: flex; gap: 6px; align-items: center; flex: 1; max-width: 440px;">
+            <input type="text" id="replan-prompt-input" placeholder="Operator guidance (e.g. rate limit 500, add canary)..." style="flex: 1; font-size: 12px;" />
+            <button type="button" id="btn-replan" class="btn btn-sm" onclick="replanStep1()">Re-plan Step 1</button>
+          </div>
+        </div>
+        <div id="plan-action-status" class="mono" style="font-size: 11.5px; color: var(--muted); min-height: 16px;"></div>
+      </div>
+    </div>
+
+    <!-- Human Approval Banner -->
     <div id="approval-banner" class="approval-banner">
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
         <strong style="font-size: 13px;">Human Approval Required</strong>
@@ -69,70 +189,278 @@
       <div id="audio-container" style="font-size: 12.5px; color: var(--muted);"></div>
       <audio id="briefing-audio" controls style="width: 100%; display: none;"></audio>
       <div style="display: flex; gap: 8px;">
-        <input id="approval-note" type="text" placeholder="Approval note (e.g. Canary green)" style="flex: 1;" />
+        <input id="approval-note" type="text" placeholder="Approval note (e.g. Canary green, proceed to merge)" style="flex: 1;" />
         <button class="btn btn-ok btn-sm" onclick="approveText()">Approve &amp; Continue</button>
       </div>
       <div id="record-status" style="font-size: 12px; color: var(--muted);"></div>
     </div>
 
+    <!-- 5-Step Verification Timeline -->
     <div id="step-list" class="steps">
-      <div class="empty-state">Select a GitHub issue above and click <strong>Run Release Closer</strong>.</div>
+      <div class="empty-state">Select or compose a release prompt above and click <strong>Run Release Closer</strong>.</div>
     </div>
   </section>
-
-  <aside class="surface">
-    <div class="section-head">
-      <div>
-        <h2>Live Events</h2>
-        <div class="section-head-desc">Real-time MongoDB Atlas Change Stream events.</div>
-      </div>
-      <span id="sse-badge" class="badge badge-neutral">Idle</span>
-    </div>
-    <div id="event-log" class="feed">
-      <div class="empty-state">Events appear here in real time via MongoDB Atlas Change Streams.</div>
-    </div>
-
-    <details class="advanced" style="margin-top: 16px; border-top: 1px solid var(--border-subtle); padding-top: 12px;">
-      <summary style="cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 500;">Advanced: Step Pacing &amp; Vector Playbooks ({{ memories|length }})</summary>
-      <div style="display: flex; align-items: center; gap: 8px; margin-top: 12px;">
-        <label for="step-delay" style="font-size: 12px; color: var(--muted);">Step delay (s):</label>
-        <input id="step-delay" type="text" value="0.5" style="width: 68px; height: 28px;" />
-        <button class="btn btn-sm" onclick="bootstrapSandbox()">Re-seed Sandbox</button>
-      </div>
-      <div id="memory-list" style="margin-top: 8px;">
-        {% for m in memories %}
-          <div class="playbook-row">
-            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.title }}</span>
-            {% if m.status == 'active' %}
-              <button class="btn btn-sm btn-danger" onclick="toggleMemory('{{ m.memory_id }}', false)">Invalidate</button>
-            {% else %}
-              <button class="btn btn-sm btn-ok" onclick="toggleMemory('{{ m.memory_id }}', true)">Restore</button>
-            {% endif %}
-          </div>
-        {% endfor %}
-      </div>
-    </details>
-  </aside>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  let currentRunId = "{{ initial_run_id }}";
+  let currentRunId = "{{ initial_run_id | default('') }}";
+  let currentStepDelay = 0.5;
+  let currentStepMode = "auto";
+  let currentIssueNumber = 0;
+  let currentIssueTitle = "";
   let eventSource = null;
   let mediaRecorder = null;
   let audioChunks = [];
+  let cachedIssues = {{ issues | tojson | safe }};
+  let cachedRepos = {{ repos | tojson | safe }};
 
-  function badgeClass(status) {
-    return FinishLineLiveRun.badgeClass(status);
+  const VERIFICATION_STEPS = [
+    { key: "step_1_plan", seq: 1, title: "Diagnose & Plan (Atlas Vector Search + Pydantic AI)" },
+    { key: "step_2_github_patch", seq: 2, title: "Ensure Branch & Commit Patch (GitHub API / Sandbox)" },
+    { key: "step_3_deploy_probe", seq: 3, title: "Deploy & Verify Microservice (Target API / Drift adaptation)" },
+    { key: "step_4_github_pr", seq: 4, title: "Open PR & Post Evidence (GitHub Pull Request + Atlas proof)" },
+    { key: "step_5_close_issue", seq: 5, title: "Merge PR & Close Issue (Release verified)" },
+  ];
+
+  function escapeHtml(text) {
+    return FinishLineLiveRun.escapeHtml(text);
   }
 
   function formatStatus(status) {
     return FinishLineLiveRun.formatStatus(status);
   }
 
-  function escapeHtml(text) {
-    return FinishLineLiveRun.escapeHtml(text);
+  function badgeClass(status) {
+    return FinishLineLiveRun.badgeClass(status);
+  }
+
+  function setPacing(preset) {
+    const buttons = document.querySelectorAll("#pacing-control button");
+    buttons.forEach((b) => b.classList.remove("active"));
+    const activeBtn = document.querySelector(`#pacing-control button[data-pacing="${preset}"]`);
+    if (activeBtn) activeBtn.classList.add("active");
+
+    if (preset === "fast") {
+      currentStepDelay = 0.1;
+      currentStepMode = "auto";
+    } else if (preset === "demo") {
+      currentStepDelay = 0.5;
+      currentStepMode = "auto";
+    } else if (preset === "slow") {
+      currentStepDelay = 2.5;
+      currentStepMode = "auto";
+    } else if (preset === "step") {
+      currentStepDelay = 0.5;
+      currentStepMode = "step_by_step";
+    }
+  }
+
+  function toggleAddRepo(show) {
+    const form = document.getElementById("add-repo-form");
+    if (!form) return;
+    const isHidden = form.classList.contains("hidden");
+    const nextState = show !== undefined ? show : isHidden;
+    form.classList.toggle("hidden", !nextState);
+    if (nextState) {
+      const slugInput = document.getElementById("add-repo-slug");
+      if (slugInput) slugInput.focus();
+    }
+  }
+
+  async function submitAddRepo() {
+    const slugInput = document.getElementById("add-repo-slug");
+    const labelInput = document.getElementById("add-repo-label");
+    const sandboxChk = document.getElementById("add-repo-create-sandbox");
+    const statusEl = document.getElementById("add-repo-status");
+
+    const repoSlug = (slugInput ? slugInput.value : "").trim();
+    const label = (labelInput ? labelInput.value : "").trim();
+    const createSandbox = sandboxChk ? sandboxChk.checked : false;
+
+    if (!repoSlug) {
+      if (statusEl) statusEl.textContent = "Please enter owner/repo";
+      return;
+    }
+
+    if (statusEl) statusEl.textContent = "Registering repo in Atlas…";
+
+    try {
+      const resp = await fetch("/api/repos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          repo: repoSlug,
+          label: label || repoSlug,
+          create_sandbox: createSandbox,
+          is_live: !repoSlug.startsWith("dry-run/"),
+        }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        if (statusEl) statusEl.textContent = err.detail || "Registration failed.";
+        return;
+      }
+
+      const data = await resp.json();
+      const savedRepo = data.repo;
+
+      // Add to select
+      const select = document.getElementById("repo-select");
+      const opt = document.createElement("option");
+      opt.value = savedRepo.repo;
+      opt.textContent = savedRepo.label || savedRepo.repo;
+      opt.dataset.live = savedRepo.is_live ? "true" : "false";
+      opt.dataset.prompt = savedRepo.default_prompt || "";
+      opt.dataset.rules = "0";
+      select.prepend(opt);
+      select.value = savedRepo.repo;
+
+      toggleAddRepo(false);
+      if (slugInput) slugInput.value = "";
+      if (labelInput) labelInput.value = "";
+      if (statusEl) statusEl.textContent = "";
+
+      onRepoChange(savedRepo.repo);
+    } catch (err) {
+      if (statusEl) statusEl.textContent = "Network error: " + err;
+    }
+  }
+
+  function onPromptInput() {
+    const textarea = document.getElementById("prompt-input");
+    const text = (textarea ? textarea.value : "").trim();
+    currentIssueNumber = 0;
+    const firstLine = text.split("\n")[0].substring(0, 80).trim();
+    currentIssueTitle = firstLine;
+
+    const ind = document.getElementById("prompt-indicator");
+    if (ind) {
+      ind.textContent = text ? `Custom Goal: "${firstLine}" (issue #0)` : "Custom Release Goal (issue #0)";
+    }
+
+    // Unselect chip active highlights
+    document.querySelectorAll("#example-chips .chip").forEach((c) => c.classList.remove("active"));
+  }
+
+  function selectChip(element, promptText, issueNum, issueTitle) {
+    const textarea = document.getElementById("prompt-input");
+    if (textarea) {
+      textarea.value = promptText;
+      textarea.focus();
+    }
+
+    currentIssueNumber = Number(issueNum) || 0;
+    currentIssueTitle = issueTitle || promptText.split("\n")[0].substring(0, 80);
+
+    const ind = document.getElementById("prompt-indicator");
+    if (ind) {
+      if (currentIssueNumber > 0) {
+        ind.textContent = `Issue #${currentIssueNumber} · ${currentIssueTitle} (editable)`;
+      } else {
+        ind.textContent = `Custom Goal · ${currentIssueTitle} (issue #0)`;
+      }
+    }
+
+    document.querySelectorAll("#example-chips .chip").forEach((c) => c.classList.remove("active"));
+    if (element) element.classList.add("active");
+  }
+
+  function renderExampleChips(selectedRepo, repoDefaultPrompt, issues) {
+    const container = document.getElementById("example-chips");
+    if (!container) return;
+
+    const chips = [];
+
+    // 1. Repo default prompt chip
+    if (repoDefaultPrompt) {
+      chips.push(`
+        <button type="button" class="chip" onclick="selectChip(this, ${JSON.stringify(repoDefaultPrompt)}, 0, 'Repo Default Prompt')">
+          <span style="color: var(--mongo); font-weight: 600;">★</span>
+          <span>Default: ${escapeHtml(repoDefaultPrompt.substring(0, 48))}…</span>
+        </button>
+      `);
+    }
+
+    // 2. Open issue chips
+    (issues || []).forEach((iss) => {
+      const promptBody = iss.body ? `${iss.title}\n\n${iss.body}` : iss.title;
+      chips.push(`
+        <button type="button" class="chip" onclick="selectChip(this, ${JSON.stringify(promptBody)}, ${iss.number}, ${JSON.stringify(iss.title)})">
+          <span style="font-weight: 600;">#${iss.number}</span>
+          <span>${escapeHtml(iss.title.substring(0, 42))}…</span>
+        </button>
+      `);
+    });
+
+    // 3. Custom release scenarios
+    const customScenarios = [
+      {
+        title: "Rate limit 300 & live PR",
+        prompt: "Enable resilient rate limiter on /v1/deployments callback webhook with rate_limit=300 and verify live PR + deployment.",
+      },
+      {
+        title: "Schema drift v2 adaptation",
+        prompt: "Adapt target service deployment payload to OpenAPI v2 callback_uri and max_rps schema without human intervention.",
+      },
+      {
+        title: "Downstream 202 retry verification",
+        prompt: "Verify downstream microservice registration actively took effect instead of trusting optimistic 202 Accepted status.",
+      },
+    ];
+
+    customScenarios.forEach((sc) => {
+      chips.push(`
+        <button type="button" class="chip" onclick="selectChip(this, ${JSON.stringify(sc.prompt)}, 0, ${JSON.stringify(sc.title)})">
+          <span>${escapeHtml(sc.title)}</span>
+        </button>
+      `);
+    });
+
+    container.innerHTML = chips.join("");
+  }
+
+  async function onRepoChange(repo) {
+    const sel = document.getElementById("repo-select");
+    const opt = sel ? sel.options[sel.selectedIndex] : null;
+    const isLive = opt ? opt.dataset.live === "true" : !repo.startsWith("dry-run/");
+    const defaultPrompt = opt ? (opt.dataset.prompt || "") : "";
+    const rulesCount = opt ? (opt.dataset.rules || "0") : "0";
+
+    // Update badges
+    const modeBadge = document.getElementById("repo-mode-badge");
+    if (modeBadge) {
+      modeBadge.textContent = isLive ? "Live GitHub" : "Dry-Run Sandbox";
+      modeBadge.className = isLive ? "badge badge-ok" : "badge badge-neutral";
+    }
+
+    const rulesBadge = document.getElementById("repo-rules-badge");
+    if (rulesBadge) {
+      rulesBadge.href = `/store?repo=${encodeURIComponent(repo)}`;
+      rulesBadge.textContent = `${rulesCount} repo rules active · Inspect ↗`;
+    }
+
+    // Fetch issues for repo
+    try {
+      const resp = await fetch(`/api/issues?repo=${encodeURIComponent(repo)}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        cachedIssues = data.issues || [];
+      }
+    } catch (e) {
+      console.warn("Failed to fetch issues for repo:", e);
+    }
+
+    renderExampleChips(repo, defaultPrompt, cachedIssues);
+
+    // Pre-fill prompt if empty
+    const promptInput = document.getElementById("prompt-input");
+    if (promptInput && !promptInput.value.trim() && defaultPrompt) {
+      const firstChip = document.querySelector("#example-chips .chip");
+      selectChip(firstChip, defaultPrompt, 0, "Repo Default Prompt");
+    }
   }
 
   function summarizeStep(cp) {
@@ -173,10 +501,16 @@
     const depEl = document.getElementById("kpi-deps");
     if (depEl) depEl.textContent = String((target.deployments || []).length);
 
+    const modeEl = document.getElementById("run-mode-badge");
+    if (modeEl) {
+      modeEl.textContent = run.step_mode || "auto";
+      modeEl.className = run.step_mode === "step_by_step" ? "badge badge-info" : "badge badge-neutral";
+    }
+
     const prSpan = document.getElementById("run-pr-link");
     if (prSpan) {
       prSpan.innerHTML = run.pr_url
-        ? `<a href="${escapeHtml(run.pr_url)}" target="_blank" class="nav-ext">PR ↗</a>`
+        ? `<a href="${escapeHtml(run.pr_url)}" target="_blank" class="nav-ext" style="font-weight: 500;">PR #${escapeHtml(run.pr_url.split("/").pop())} ↗</a>`
         : "";
     }
 
@@ -188,6 +522,54 @@
     if (btnResume) btnResume.classList.toggle("hidden", !(status === "crashed" || (status === "running" && !run.worker_pid) || run.step_paused));
     if (btnRollback) btnRollback.classList.toggle("hidden", !["running", "crashed", "awaiting_approval", "completed"].includes(status));
 
+    // Paused-at-Checkpoint Banner
+    const pauseBanner = document.getElementById("pause-banner");
+    const pauseTitle = document.getElementById("pause-title");
+    const pauseSubtitle = document.getElementById("pause-subtitle");
+    const planDrawer = document.getElementById("plan-review-drawer");
+
+    if (pauseBanner) {
+      if (run.step_paused) {
+        pauseBanner.classList.add("visible");
+        const stepNum = run.paused_after_step || run.current_step || 1;
+        if (pauseTitle) pauseTitle.textContent = `⏸ Paused at Step ${stepNum} Checkpoint`;
+        if (pauseSubtitle) pauseSubtitle.textContent = `Worker paused at step ${stepNum}. Review checkpoint state or advance when ready.`;
+
+        // If paused after Step 1, render editable Plan Review drawer
+        if (stepNum === 1 && planDrawer) {
+          planDrawer.classList.remove("hidden");
+          const cp1 = checkpoints.find((c) => c.step_key === "step_1_plan");
+          if (cp1 && cp1.post_state && cp1.post_state.fix_plan) {
+            const plan = cp1.post_state.fix_plan;
+            const patchFileEl = document.getElementById("plan-patch-filename");
+            const patchContentEl = document.getElementById("plan-patch-content");
+            const prTitleEl = document.getElementById("plan-pr-title");
+            const rateLimitEl = document.getElementById("plan-rate-limit");
+
+            // Populate form only if not currently focused by user
+            if (patchFileEl && document.activeElement !== patchFileEl) {
+              patchFileEl.value = plan.patch_filename || "service_config.json";
+            }
+            if (patchContentEl && document.activeElement !== patchContentEl) {
+              patchContentEl.value = plan.patch_content || "";
+            }
+            if (prTitleEl && document.activeElement !== prTitleEl) {
+              prTitleEl.value = plan.pr_title || "";
+            }
+            if (rateLimitEl && document.activeElement !== rateLimitEl) {
+              rateLimitEl.value = (plan.deployment_config && plan.deployment_config.rate_limit) || 300;
+            }
+          }
+        } else if (planDrawer) {
+          planDrawer.classList.add("hidden");
+        }
+      } else {
+        pauseBanner.classList.remove("visible");
+        if (planDrawer) planDrawer.classList.add("hidden");
+      }
+    }
+
+    // Human Approval Banner
     const approvalBanner = document.getElementById("approval-banner");
     const audioEvent = events.find((e) => e.details && e.details.audio_url);
     const audioEl = document.getElementById("briefing-audio");
@@ -211,29 +593,68 @@
       }
     }
 
+    // 5-Step Verification Timeline
     const stepList = document.getElementById("step-list");
     if (stepList) {
-      const stepHtml = checkpoints.map((cp) => `
-        <div class="step-row">
-          <div class="step-top">
-            <span class="step-title">${cp.step_seq}. ${escapeHtml(cp.title)}</span>
-            <span class="badge ${badgeClass(cp.status)}">${escapeHtml(formatStatus(cp.status))}</span>
-          </div>
-          <div class="step-detail">${summarizeStep(cp)}</div>
-        </div>
-      `).join("");
-      stepList.innerHTML = stepHtml || '<div class="empty-state">Starting worker…</div>';
-    }
+      const stepHtml = VERIFICATION_STEPS.map((vStep) => {
+        const cp = checkpoints.find((c) => c.step_key === vStep.key);
+        const isCurrent = run.current_step === vStep.seq;
+        const stepStatus = cp ? cp.status : (isCurrent ? run.status : "pending");
+        const hasCheckpoint = cp && cp.status === "verified_took_effect";
 
-    const evLog = document.getElementById("event-log");
-    if (evLog) {
-      const evHtml = events.slice(-16).map((ev) => `
-        <div class="feed-row">
-          <div class="feed-type">${escapeHtml(ev.event_type)}</div>
-          <div class="feed-msg">${escapeHtml(ev.message)}</div>
-        </div>
-      `).join("");
-      evLog.innerHTML = evHtml || '<div class="empty-state">No events yet.</div>';
+        let detailContent = "";
+        if (cp) {
+          const detailRows = [];
+          if (cp.post_state && Object.keys(cp.post_state).length > 0) {
+            const ps = cp.post_state;
+            if (ps.fix_plan) {
+              detailRows.push(`<div class="step-kv-label">Patch Target</div><div class="step-kv-val">${escapeHtml(ps.fix_plan.patch_filename || "")}</div>`);
+              if (ps.fix_plan.deployment_config) {
+                detailRows.push(`<div class="step-kv-label">Config RPS</div><div class="step-kv-val">${escapeHtml(JSON.stringify(ps.fix_plan.deployment_config.rate_limit || ""))}</div>`);
+              }
+            }
+            if (ps.recalled_memories && ps.recalled_memories.length > 0) {
+              detailRows.push(`<div class="step-kv-label">Vector Recall</div><div class="step-kv-val">${escapeHtml(ps.recalled_memories.join(" · "))}</div>`);
+            }
+          }
+          if (cp.probe_result) {
+            detailRows.push(`<div class="step-kv-label">Probe Active</div><div class="step-kv-val">${escapeHtml(String(cp.probe_result.active))} (attempts: ${cp.attempts})</div>`);
+          }
+          if (cp.adaptation_used) {
+            detailRows.push(`<div class="step-kv-label">Adaptation</div><div class="step-kv-val" style="color: var(--ok); font-weight: 500;">${escapeHtml(cp.adaptation_used)}</div>`);
+          }
+          if (cp.compensating_action) {
+            detailRows.push(`<div class="step-kv-label">Compensating</div><div class="step-kv-val" style="color: var(--danger);">${escapeHtml(cp.compensating_action)}</div>`);
+          }
+          if (cp.external_ref) {
+            detailRows.push(`<div class="step-kv-label">External Ref</div><div class="step-kv-val"><a href="${escapeHtml(cp.external_ref)}" target="_blank">${escapeHtml(cp.external_ref)}</a></div>`);
+          }
+          if (detailRows.length > 0) {
+            detailContent = `
+              <details class="step-expansion">
+                <summary>Inspect Checkpoint Details (${detailRows.length / 2} fields)</summary>
+                <div class="step-kv-grid">${detailRows.join("")}</div>
+              </details>
+            `;
+          }
+        }
+
+        return `
+          <div class="step-row">
+            <div class="step-top">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="step-title">${vStep.seq}. ${escapeHtml(vStep.title)}</span>
+                ${hasCheckpoint ? '<span class="badge badge-mongo" style="font-size: 11px;">Atlas checkpoint</span>' : ''}
+              </div>
+              <span class="badge ${badgeClass(stepStatus)}">${escapeHtml(formatStatus(stepStatus))}</span>
+            </div>
+            <div class="step-detail">${cp ? summarizeStep(cp) : (isCurrent ? 'Executing…' : 'Pending')}</div>
+            ${detailContent}
+          </div>
+        `;
+      }).join("");
+
+      stepList.innerHTML = stepHtml;
     }
   }
 
@@ -244,11 +665,6 @@
     }
     if (!runId) return;
     currentRunId = runId;
-    const sseBadge = document.getElementById("sse-badge");
-    if (sseBadge) {
-      sseBadge.textContent = "Live";
-      sseBadge.className = "badge badge-ok";
-    }
 
     eventSource = FinishLineLiveRun.connectLiveRun({
       runId: runId,
@@ -263,26 +679,35 @@
     if (resp.ok) renderSnapshot(await resp.json());
   }
 
-  async function bootstrapSandbox() {
-    await fetch("/sandbox/bootstrap", { method: "POST" });
-    window.location.reload();
-  }
-
   async function startRun() {
-    const selIssue = document.getElementById("issue-select");
-    const opt = selIssue.options[selIssue.selectedIndex];
-    const stepDelay = parseFloat(document.getElementById("step-delay").value || "0.5");
+    const selRepo = document.getElementById("repo-select");
+    const selectedRepo = selRepo ? selRepo.value : "";
+    const promptInput = document.getElementById("prompt-input");
+    const promptText = (promptInput ? promptInput.value : "").trim();
+
+    const firstLine = promptText.split("\n")[0].substring(0, 80).trim();
+    const issueTitle = currentIssueNumber > 0 ? (currentIssueTitle || firstLine) : (firstLine || "Autonomous release fix");
+    const issueBody = promptText || issueTitle;
+
     const resp = await fetch("/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        issue_number: opt ? Number(opt.value) : 1,
-        issue_title: opt ? opt.dataset.title : "Fix webhook rate limit",
-        issue_body: opt ? opt.dataset.body : "",
-        step_delay: isNaN(stepDelay) ? 0.5 : stepDelay,
+        repo: selectedRepo,
+        issue_number: currentIssueNumber,
+        issue_title: issueTitle,
+        issue_body: issueBody,
+        step_delay: currentStepDelay,
+        step_mode: currentStepMode,
         auto_spawn: true,
       }),
     });
+
+    if (!resp.ok) {
+      alert("Failed to start run: " + resp.statusText);
+      return;
+    }
+
     const data = await resp.json();
     const sel = document.getElementById("run-selector");
     if (sel.options.length === 1 && sel.options[0].value === "") {
@@ -290,10 +715,98 @@
     }
     const runOpt = document.createElement("option");
     runOpt.value = data.run_id;
-    runOpt.textContent = `${data.run_id} · #${opt ? opt.value : 1} (running)`;
+    runOpt.textContent = `${data.run_id} · #${currentIssueNumber} (running)`;
     sel.prepend(runOpt);
     sel.value = data.run_id;
+
     connectStream(data.run_id);
+    if (data.run) renderSnapshot({ run: data.run, checkpoints: [], events: [], target: {} });
+  }
+
+  async function savePlan() {
+    if (!currentRunId) return;
+    const statusEl = document.getElementById("plan-action-status");
+    if (statusEl) statusEl.textContent = "Saving plan to Atlas checkpoint…";
+
+    const patchFilename = (document.getElementById("plan-patch-filename").value || "").trim();
+    const patchContent = document.getElementById("plan-patch-content").value;
+    const prTitle = (document.getElementById("plan-pr-title").value || "").trim();
+    const rateLimit = parseInt(document.getElementById("plan-rate-limit").value, 10) || 300;
+
+    const payload = {
+      fix_plan: {
+        patch_filename: patchFilename,
+        patch_content: patchContent,
+        pr_title: prTitle,
+        deployment_config: {
+          rate_limit: rateLimit,
+        },
+      },
+    };
+
+    try {
+      const resp = await fetch(`/runs/${currentRunId}/plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (resp.ok) {
+        if (statusEl) statusEl.textContent = "✓ Plan saved to Atlas checkpoint.";
+      } else {
+        const err = await resp.json().catch(() => ({}));
+        if (statusEl) statusEl.textContent = `Error: ${err.detail || resp.statusText}`;
+      }
+    } catch (e) {
+      if (statusEl) statusEl.textContent = "Network error saving plan: " + e;
+    }
+  }
+
+  async function replanStep1() {
+    if (!currentRunId) return;
+    const input = document.getElementById("replan-prompt-input");
+    const replanPrompt = (input ? input.value : "").trim();
+    if (!replanPrompt) return;
+
+    const statusEl = document.getElementById("plan-action-status");
+    if (statusEl) statusEl.textContent = "Re-planning Step 1 with Pydantic AI & Atlas Vector Search…";
+
+    try {
+      const resp = await fetch(`/runs/${currentRunId}/plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ replan_prompt: replanPrompt }),
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        if (statusEl) statusEl.textContent = "✓ Re-planned successfully.";
+        if (data.fix_plan) {
+          const plan = data.fix_plan;
+          const patchFileEl = document.getElementById("plan-patch-filename");
+          const patchContentEl = document.getElementById("plan-patch-content");
+          const prTitleEl = document.getElementById("plan-pr-title");
+          const rateLimitEl = document.getElementById("plan-rate-limit");
+
+          if (patchFileEl) patchFileEl.value = plan.patch_filename || "";
+          if (patchContentEl) patchContentEl.value = plan.patch_content || "";
+          if (prTitleEl) prTitleEl.value = plan.pr_title || "";
+          if (rateLimitEl && plan.deployment_config) {
+            rateLimitEl.value = plan.deployment_config.rate_limit || 300;
+          }
+        }
+      } else {
+        const err = await resp.json().catch(() => ({}));
+        if (statusEl) statusEl.textContent = `Error: ${err.detail || resp.statusText}`;
+      }
+    } catch (e) {
+      if (statusEl) statusEl.textContent = "Network error replanning: " + e;
+    }
+  }
+
+  async function advanceStep() {
+    if (!currentRunId) return;
+    await FinishLineLiveRun.advanceLiveRun(currentRunId, currentStepDelay);
   }
 
   async function killWorker() {
@@ -303,8 +816,7 @@
 
   async function resumeWorker() {
     if (!currentRunId) return;
-    const stepDelay = parseFloat(document.getElementById("step-delay").value || "0.5");
-    await fetch(`/runs/${currentRunId}/resume?step_delay=${isNaN(stepDelay) ? 0.5 : stepDelay}`, { method: "POST" });
+    await fetch(`/runs/${currentRunId}/resume?step_delay=${currentStepDelay}`, { method: "POST" });
   }
 
   async function triggerRollback() {
@@ -350,25 +862,25 @@
     status.textContent = "Recording…";
   }
 
-  async function toggleMemory(memoryId, restore) {
-    await fetch(`/memories/${memoryId}/invalidate?restore=${restore}`, { method: "POST" });
-    const resp = await fetch("/api/memories");
-    const data = await resp.json();
-    document.getElementById("memory-list").innerHTML = (data.memories || []).map((m) => `
-      <div class="playbook-row">
-        <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(m.title)}</span>
-        ${m.status === "active"
-          ? `<button class="btn btn-sm btn-danger" onclick="toggleMemory('${escapeHtml(m.memory_id)}', false)">Invalidate</button>`
-          : `<button class="btn btn-sm btn-ok" onclick="toggleMemory('${escapeHtml(m.memory_id)}', true)">Restore</button>`
-        }
-      </div>
-    `).join("");
-  }
+  // Initial boot
+  document.addEventListener("DOMContentLoaded", () => {
+    const sel = document.getElementById("repo-select");
+    const opt = sel ? sel.options[sel.selectedIndex] : null;
+    const defaultPrompt = opt ? (opt.dataset.prompt || "") : "";
+    const selectedRepo = sel ? sel.value : "";
 
-  if (currentRunId) {
-    const initial = {{ initial_snapshot | tojson | safe }};
-    if (initial) renderSnapshot(initial);
-    connectStream(currentRunId);
-  }
+    renderExampleChips(selectedRepo, defaultPrompt, cachedIssues);
+
+    if (defaultPrompt) {
+      const firstChip = document.querySelector("#example-chips .chip");
+      selectChip(firstChip, defaultPrompt, 0, "Repo Default Prompt");
+    }
+
+    if (currentRunId) {
+      const initial = {{ initial_snapshot | tojson | safe }};
+      if (initial) renderSnapshot(initial);
+      connectStream(currentRunId);
+    }
+  });
 </script>
 {% endblock %}

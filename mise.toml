@@ -3,6 +3,10 @@ description = "Run FinishLine Control Room (:8000) and Target Service (:8001)"
 alias = ["web", "serve"]
 run = "uv run mongodb-hackathon"
 
+[tasks.dev]
+description = "Run FinishLine Control Room (:8000) and Target Service (:8001) with auto-reload"
+run = "uv run mongodb-hackathon --reload"
+
 [tasks.walkthrough]
 description = "Serve the architecture walkthrough on 0.0.0.0:${WALKTHROUGH_PORT:-8090}"
 run = 'python3 -m http.server "${WALKTHROUGH_PORT:-8090}" --bind 0.0.0.0 --directory docs/walkthrough'

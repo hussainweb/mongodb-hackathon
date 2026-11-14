@@ -14,6 +14,29 @@ from mongodb_hackathon.mongo import MongoStore
 
 STARTER_REPOS: list[dict[str, Any]] = [
     {
+        "repo": "dry-run/payments-infra",
+        "label": "Payments Infra (OpenTofu + Docker)",
+        "description": (
+            "OpenTofu infrastructure in terraform/environments/staging/ provisioning local Docker worker containers."
+        ),
+        "is_live": False,
+        "default_prompt": (
+            "Burst webhook traffic is dropping at 120 RPS. Scale worker_count to 3 and raise "
+            "max_rps=300 in OpenTofu, apply to Docker, and verify container /health probes."
+        ),
+    },
+    {
+        "repo": "dry-run/billing-stack",
+        "label": "Billing Stack (OpenTofu deploy/tf)",
+        "description": (
+            "Alternate repo layout with OpenTofu modules under deploy/tf/prod.tfvars."
+        ),
+        "is_live": False,
+        "default_prompt": (
+            "Scale billing-worker containers to 2 replicas with canary max_rps=150 and verify live health."
+        ),
+    },
+    {
         "repo": "dry-run/payments-webhook",
         "label": "Payments Webhook (Dry-Run)",
         "description": (
@@ -39,6 +62,36 @@ STARTER_REPOS: list[dict[str, Any]] = [
 ]
 
 REPO_RULES: list[dict[str, Any]] = [
+    {
+        "memory_id": "rule-payments-infra-tofu-guard",
+        "kind": "repo_rule",
+        "source_repo": "dry-run/payments-infra",
+        "title": "Payments Infra: cap staging worker_count <= 4 and max_rps <= 300",
+        "content": (
+            "Repo rule for dry-run/payments-infra: OpenTofu files live under terraform/environments/staging/. "
+            "Staging runs must cap worker_count <= 4, max_rps <= 300, and verify all Docker containers return healthy."
+        ),
+        "resolution": (
+            "Update terraform/environments/staging/terraform.tfvars with worker_count <= 4, max_rps=300, "
+            "apply via tofu, and verify every worker container /health returns active=true."
+        ),
+        "field_mapping": {"tf_dir": "terraform/environments/staging", "max_workers": "4"},
+    },
+    {
+        "memory_id": "rule-billing-stack-canary-guard",
+        "kind": "repo_rule",
+        "source_repo": "dry-run/billing-stack",
+        "title": "Billing Stack: use deploy/tf/prod.tfvars with canary max_rps=150",
+        "content": (
+            "Repo rule for dry-run/billing-stack: OpenTofu root is deploy/tf/ (not infra/). "
+            "Use prod.tfvars with conservative max_rps=150 and env_tier='canary'."
+        ),
+        "resolution": (
+            "Update deploy/tf/prod.tfvars with worker_count=2, max_rps=150, env_tier='canary', "
+            "and verify Docker container health before opening PR."
+        ),
+        "field_mapping": {"tf_dir": "deploy/tf", "rate_limit_max": "150"},
+    },
     {
         "memory_id": "rule-payments-webhook-rate-limit",
         "kind": "repo_rule",
@@ -124,6 +177,27 @@ DRIFT_PLAYBOOKS: list[dict[str, Any]] = [
             "prefixed labels before adding labels to an issue or PR."
         ),
         "field_mapping": {"bug": "type:bug", "verified": "status:verified"},
+    },
+    {
+        "memory_id": "drift-opentofu-docker-v1-to-v2",
+        "kind": "drift_playbook",
+        "source_repo": "*",
+        "title": "OpenTofu Docker worker v1 -> v2 env contract drift (MAX_RPS, CALLBACK_URI, ENV_TIER)",
+        "content": (
+            "Docker worker container image upgraded to v2 and rejects legacy v1 env vars RATE_LIMIT / WEBHOOK_URL "
+            "with HTTP 503 contract_drift, requiring MAX_RPS, CALLBACK_URI, and ENV_TIER."
+        ),
+        "resolution": (
+            "Set use_v2_env=true (mapping webhook_url -> callback_uri, rate_limit -> max_rps, "
+            "and env_tier='staging') in OpenTofu tfvars/apply variables and re-apply containers."
+        ),
+        "field_mapping": {
+            "endpoint": "/v2/deployments",
+            "webhook_url": "callback_uri",
+            "rate_limit": "max_rps",
+            "env_tier": "staging",
+            "use_v2_env": "true",
+        },
     },
 ]
 

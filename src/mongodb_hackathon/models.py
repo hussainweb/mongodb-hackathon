@@ -87,6 +87,7 @@ class JobRun(BaseModel):
     step_paused: bool = False
     step_gate_approved: bool = False
     paused_after_step: int = 0
+    auto_respawn: bool = False
     voice_audio_path: str = ""
     voice_briefing_text: str = ""
     summary: str = ""
@@ -155,6 +156,8 @@ class FixPlan(BaseModel):
     """Structured release/remediation plan produced by Pydantic AI for an issue."""
 
     root_cause: str
+    target_kind: str = "service_config"  # "opentofu" | "service_config"
+    tf_dir: str = ""
     patch_filename: str
     patch_content: str
     commit_message: str

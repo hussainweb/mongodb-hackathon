@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -11,6 +12,27 @@ import httpx
 from mongodb_hackathon.config import Settings, get_settings
 
 GITHUB_API = "https://api.github.com"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+INFRA_TEMPLATE_DIR = REPO_ROOT / "infra" / "template"
+
+DRY_RUN_TF_LAYOUTS: dict[str, dict[str, Any]] = {
+    "dry-run/payments-infra": {
+        "tf_dir": "terraform/environments/staging",
+        "tfvars_name": "terraform.tfvars",
+        "service_name": "payments-webhook",
+        "worker_count": 1,
+        "max_rps": 120,
+        "env_tier": "staging",
+    },
+    "dry-run/billing-stack": {
+        "tf_dir": "deploy/tf",
+        "tfvars_name": "prod.tfvars",
+        "service_name": "billing-worker",
+        "worker_count": 1,
+        "max_rps": 150,
+        "env_tier": "canary",
+    },
+}
 
 
 def resolve_github_token(settings: Settings | None = None) -> str:
@@ -95,27 +117,30 @@ class GitHubSandboxAdapter:
     async def _seed_sandbox_defaults(
         self, client: httpx.AsyncClient, full_name: str
     ) -> None:
-        """Ensure base service config file, labels, and a sample issue exist in the sandbox."""
-        config_resp = await client.get(
-            f"/repos/{full_name}/contents/service_config.json"
-        )
-        if config_resp.status_code == 404:
-            content = (
-                "{\n"
-                '  "service_name": "payments-webhook",\n'
-                '  "webhook_url": "https://hooks.example.internal/v1/ingest",\n'
-                '  "rate_limit": 120,\n'
-                '  "env_tier": "staging"\n'
-                "}\n"
-            )
-            encoded = base64.b64encode(content.encode()).decode()
-            await client.put(
-                f"/repos/{full_name}/contents/service_config.json",
-                json={
-                    "message": "chore: add baseline service_config.json",
-                    "content": encoded,
-                },
-            )
+        """Ensure baseline OpenTofu infra files, labels, and sample issue exist in the sandbox."""
+        tf_files = await self.list_repo_files(full_name)
+        has_tf = any(p.endswith((".tf", ".tfvars")) for p in tf_files)
+        has_service_cfg = "service_config.json" in tf_files
+
+        if not has_tf and not has_service_cfg:
+            template_files = {
+                "infra/main.tf": INFRA_TEMPLATE_DIR / "main.tf",
+                "infra/variables.tf": INFRA_TEMPLATE_DIR / "variables.tf",
+                "infra/outputs.tf": INFRA_TEMPLATE_DIR / "outputs.tf",
+                "infra/terraform.tfvars": INFRA_TEMPLATE_DIR / "terraform.tfvars",
+            }
+            for remote_path, local_path in template_files.items():
+                if not local_path.exists():
+                    continue
+                content = local_path.read_text(encoding="utf-8")
+                encoded = base64.b64encode(content.encode()).decode()
+                await client.put(
+                    f"/repos/{full_name}/contents/{remote_path}",
+                    json={
+                        "message": f"chore: add baseline {remote_path}",
+                        "content": encoded,
+                    },
+                )
 
         issues_resp = await client.get(
             f"/repos/{full_name}/issues",
@@ -125,15 +150,115 @@ class GitHubSandboxAdapter:
             await client.post(
                 f"/repos/{full_name}/issues",
                 json={
-                    "title": "Webhook retries drop under burst load in staging",
+                    "title": "Scale webhook workers to 3 replicas and raise MAX_RPS to 300",
                     "body": (
-                        "Downstream webhook ingestion is dropping burst retries when rate_limit is "
-                        "capped at 120. Raise rate_limit to 300, verify deployment takes effect, "
-                        "and open a release PR."
+                        "Burst traffic is dropping webhooks at 120 RPS on a single worker. "
+                        "Update the OpenTofu configuration to run worker_count=3 and max_rps=300 "
+                        "in staging, apply to Docker, verify /health on every container, and open a PR."
                     ),
                     "labels": ["bug"],
                 },
             )
+
+    def _dry_run_file_map(self, repo: str) -> dict[str, str]:
+        """Return realistic simulated repository files for dry-run repositories."""
+        if repo in DRY_RUN_TF_LAYOUTS:
+            spec = DRY_RUN_TF_LAYOUTS[repo]
+            tf_dir = str(spec["tf_dir"]).strip("/")
+            tfvars_name = str(spec["tfvars_name"])
+            files: dict[str, str] = {
+                "README.md": f"# {repo}\n\nManaged with OpenTofu in `{tf_dir}/`.\n"
+            }
+            for name in ("main.tf", "variables.tf", "outputs.tf"):
+                tpl = INFRA_TEMPLATE_DIR / name
+                if tpl.exists():
+                    files[f"{tf_dir}/{name}"] = tpl.read_text(encoding="utf-8")
+            files[f"{tf_dir}/{tfvars_name}"] = (
+                f'worker_count = {spec["worker_count"]}\n'
+                f'max_rps      = {spec["max_rps"]}\n'
+                f'service_name = "{spec["service_name"]}"\n'
+                f'env_tier     = "{spec["env_tier"]}"\n'
+                'callback_uri = "https://hooks.example.internal/v1/ingest"\n'
+            )
+            return files
+
+        return {
+            "README.md": f"# {repo}\n",
+            "service_config.json": (
+                "{\n"
+                '  "service_name": "payments-webhook",\n'
+                '  "webhook_url": "https://hooks.example.internal/v1/ingest",\n'
+                '  "rate_limit": 120,\n'
+                '  "env_tier": "staging"\n'
+                "}\n"
+            ),
+        }
+
+    async def list_repo_files(self, repo: str, ref: str = "") -> list[str]:
+        """List repository file paths so the agent can discover TF/config layouts dynamically."""
+        if self._is_dry_run(repo):
+            return sorted(self._dry_run_file_map(repo).keys())
+
+        async with httpx.AsyncClient(
+            base_url=GITHUB_API, headers=self._headers(), timeout=12.0
+        ) as client:
+            target_ref = ref.strip()
+            if not target_ref:
+                repo_resp = await client.get(f"/repos/{repo}")
+                if repo_resp.status_code == 200:
+                    target_ref = str(repo_resp.json().get("default_branch", "main"))
+                else:
+                    target_ref = "main"
+
+            tree_resp = await client.get(
+                f"/repos/{repo}/git/trees/{target_ref}",
+                params={"recursive": "1"},
+            )
+            if tree_resp.status_code != 200:
+                return []
+            paths: list[str] = []
+            for entry in tree_resp.json().get("tree", []):
+                if entry.get("type") != "blob":
+                    continue
+                path = str(entry.get("path", ""))
+                if not path or ".terraform/" in path or path.startswith(".git/"):
+                    continue
+                paths.append(path)
+            return sorted(paths)
+
+    async def read_repo_file(self, repo: str, path: str, ref: str = "") -> str:
+        """Read a text file from dry-run fixture or live GitHub repository."""
+        if self._is_dry_run(repo):
+            return self._dry_run_file_map(repo).get(path, "")
+
+        async with httpx.AsyncClient(
+            base_url=GITHUB_API, headers=self._headers(), timeout=12.0
+        ) as client:
+            params = {"ref": ref} if ref else None
+            resp = await client.get(f"/repos/{repo}/contents/{path}", params=params)
+            if resp.status_code != 200:
+                return ""
+            encoded = str(resp.json().get("content", "")).replace("\n", "")
+            if not encoded:
+                return ""
+            return base64.b64decode(encoded).decode(errors="replace")
+
+    async def discover_infra_context(
+        self, repo: str, ref: str = ""
+    ) -> tuple[list[str], dict[str, str]]:
+        """Discover repository layout and read relevant OpenTofu or service config files."""
+        files = await self.list_repo_files(repo, ref=ref)
+        interesting = [
+            p
+            for p in files
+            if p.endswith((".tf", ".tfvars", "service_config.json"))
+        ][:8]
+        contents: dict[str, str] = {}
+        for path in interesting:
+            text = await self.read_repo_file(repo, path, ref=ref)
+            if text:
+                contents[path] = text[:4000]
+        return files, contents
 
     async def get_issue(self, repo: str, issue_number: int) -> dict[str, Any]:
         """Fetch an issue from GitHub."""

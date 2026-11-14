@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
+import re
 from pathlib import Path
 from typing import Any
 
@@ -48,17 +50,26 @@ def build_model(
 
 
 def create_planner_agent(model: Model) -> Agent[None, FixPlan]:
-    """Create Pydantic AI agent that converts a GitHub issue + past experience into a FixPlan."""
+    """Create Pydantic AI agent that inspects repo layout and produces a FixPlan."""
     return Agent(
         model,
         name="finishline_release_planner",
         output_type=FixPlan,
         instructions=(
-            "You are a senior release reliability engineer. Given a GitHub issue, current service "
-            "configuration, and similar historical resolutions from MongoDB Atlas Vector Search, "
-            "produce a clean, minimal FixPlan updating service_config.json, a deployment_config dict "
-            "with integer `rate_limit` (1..10000, e.g. 300), `service_name` string, and "
-            "`webhook_url` string compatible with /v1/deployments, and a concise PR summary."
+            "You are a senior release reliability & GitOps engineer. Given a GitHub issue/goal, "
+            "the repository's actual file tree, existing config/Terraform file contents, and "
+            "similar historical rules/resolutions from MongoDB Atlas Vector Search, decide which "
+            "exact file to modify and produce a clean, valid FixPlan.\n"
+            "- If the repository contains OpenTofu/Terraform files (*.tf / *.tfvars) anywhere in "
+            "its directory tree, set `target_kind='opentofu'`, set `tf_dir` to the directory "
+            "containing the `.tf` files (e.g. 'infra', 'terraform/environments/staging', 'deploy/tf', "
+            "or '.' if at repo root), pick the appropriate `.tfvars` (or `.tf`) path inside that "
+            "directory as `patch_filename`, preserve existing variables, and populate `deployment_config` "
+            "with `worker_count` (1..8), `rate_limit` (1..10000), `max_rps` (same integer), "
+            "`service_name`, `env_tier` ('staging'|'canary'|'production'), and `callback_uri`.\n"
+            "- Otherwise (no .tf files), set `target_kind='service_config'`, `tf_dir=''`, target "
+            "`service_config.json`, and populate `deployment_config` with `rate_limit`, "
+            "`service_name`, and `webhook_url` compatible with /v1/deployments."
         ),
     )
 
@@ -80,10 +91,132 @@ def create_drift_agent(model: Model) -> Agent[None, DriftAdaptationPlan]:
     )
 
 
+def _extract_int_near(text: str, patterns: list[str], default: int, lo: int, hi: int) -> int:
+    for pat in patterns:
+        match = re.search(pat, text, flags=re.IGNORECASE)
+        if match:
+            val = int(match.group(1))
+            return max(lo, min(hi, val))
+    return default
+
+
+def _parse_tfvars_kv(raw: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "//")) or "=" not in stripped:
+            continue
+        k, v = stripped.split("=", 1)
+        parsed[k.strip()] = v.strip().strip('"')
+    return parsed
+
+
 def _deterministic_fix_plan(
-    issue_number: int, issue_title: str, issue_body: str
+    issue_number: int,
+    issue_title: str,
+    issue_body: str,
+    repo_files: list[str] | None = None,
+    file_contents: dict[str, str] | None = None,
 ) -> FixPlan:
     """Deterministic fallback plan used only when OPENAI_API_KEY is unset (offline dry-run)."""
+    combined = f"{issue_title}\n{issue_body}"
+    files = repo_files or []
+    contents = file_contents or {}
+
+    tf_files = [p for p in files if p.endswith(".tf")]
+    tfvars_files = [p for p in files if p.endswith(".tfvars")]
+
+    if tf_files:
+        # Pick the tfvars file matching a directory that contains .tf files, or create terraform.tfvars there.
+        tf_dirs = sorted({posixpath.dirname(p) or "." for p in tf_files})
+        chosen_tfvars = ""
+        chosen_dir = tf_dirs[0]
+        for cand in tfvars_files:
+            cand_dir = posixpath.dirname(cand) or "."
+            if cand_dir in tf_dirs:
+                chosen_tfvars = cand
+                chosen_dir = cand_dir
+                break
+        if not chosen_tfvars:
+            chosen_tfvars = (
+                "terraform.tfvars"
+                if chosen_dir == "."
+                else f"{chosen_dir}/terraform.tfvars"
+            )
+
+        existing = _parse_tfvars_kv(contents.get(chosen_tfvars, ""))
+        service_name = existing.get("service_name", "payments-webhook")
+        if "billing" in combined.lower():
+            service_name = "billing-worker"
+        elif "payment" in combined.lower():
+            service_name = "payments-webhook"
+
+        env_tier = existing.get("env_tier", "staging")
+        for tier in ("production", "canary", "staging"):
+            if tier in combined.lower():
+                env_tier = tier
+                break
+
+        worker_count = _extract_int_near(
+            combined,
+            [
+                r"worker_count\s*[=:]\s*(\d+)",
+                r"replicas?\s*(?:to|=|:)?\s*(\d+)",
+                r"(\d+)\s*(?:workers?|replicas?|containers?|instances?)",
+            ],
+            default=3 if any(w in combined.lower() for w in ("scale", "worker", "replica", "burst")) else int(existing.get("worker_count", "2") or 2),
+            lo=1,
+            hi=8,
+        )
+        max_rps = _extract_int_near(
+            combined,
+            [
+                r"(?:max_rps|rate_limit|rps)\s*(?:to|=|:)?\s*(\d+)",
+                r"(\d+)\s*rps",
+            ],
+            default=300 if ("300" in combined or "burst" in combined.lower()) else int(existing.get("max_rps", "250") or 250),
+            lo=1,
+            hi=10000,
+        )
+        callback_uri = existing.get(
+            "callback_uri", "https://hooks.example.internal/v1/ingest"
+        )
+        tfvars_body = (
+            f"worker_count = {worker_count}\n"
+            f"max_rps      = {max_rps}\n"
+            f'service_name = "{service_name}"\n'
+            f'env_tier     = "{env_tier}"\n'
+            f'callback_uri = "{callback_uri}"\n'
+        )
+        return FixPlan(
+            root_cause=(
+                f"Address issue #{issue_number} ({issue_title}) by updating OpenTofu vars in "
+                f"`{chosen_tfvars}` (worker_count={worker_count}, max_rps={max_rps})."
+            ),
+            target_kind="opentofu",
+            tf_dir=chosen_dir,
+            patch_filename=chosen_tfvars,
+            patch_content=tfvars_body,
+            commit_message=f"infra: scale {service_name} to {worker_count} workers at {max_rps} RPS",
+            deployment_config={
+                "service_name": service_name,
+                "worker_count": worker_count,
+                "rate_limit": max_rps,
+                "max_rps": max_rps,
+                "env_tier": env_tier,
+                "callback_uri": callback_uri,
+                "webhook_url": callback_uri,
+                "tf_dir": chosen_dir,
+            },
+            pr_title=f"infra: {issue_title} (#{issue_number})" if issue_number > 0 else f"infra: {issue_title[:60]}",
+            pr_body=(
+                f"Resolves #{issue_number}.\n\n"
+                f"- Discovered OpenTofu root: `{chosen_dir}/`\n"
+                f"- Updated `{chosen_tfvars}` (`worker_count={worker_count}`, `max_rps={max_rps}`, `env_tier={env_tier}`)\n"
+                f"- Applied via `tofu apply` and verified Docker container `/health` probes"
+            ),
+        )
+
     rate_limit = 300 if "300" in issue_body or "burst" in issue_body.lower() else 250
     cfg = {
         "service_name": "payments-webhook",
@@ -93,6 +226,8 @@ def _deterministic_fix_plan(
     }
     return FixPlan(
         root_cause=f"Address issue #{issue_number} ({issue_title}) by tuning rate_limit={rate_limit}.",
+        target_kind="service_config",
+        tf_dir="",
         patch_filename="service_config.json",
         patch_content=json.dumps(cfg, indent=2) + "\n",
         commit_message=f"fix: resolve #{issue_number} by raising staging rate_limit to {rate_limit}",
@@ -150,6 +285,8 @@ async def plan_release_fix(
     memories: list[dict[str, Any]],
     settings: Settings | None = None,
     model_override: Model | None = None,
+    repo_files: list[str] | None = None,
+    file_contents: dict[str, str] | None = None,
 ) -> FixPlan:
     """Plan the GitHub patch and deployment config using Pydantic AI + Vector Search context."""
     configure_observability()
@@ -161,11 +298,18 @@ async def plan_release_fix(
             "issue_number": issue_number,
             "issue_title": issue_title,
             "memory_count": len(memories),
+            "repo_file_count": len(repo_files or []),
         },
     ) as ls_run:
         model = build_model(cfg, model_override)
         if model is None:
-            plan = _deterministic_fix_plan(issue_number, issue_title, issue_body)
+            plan = _deterministic_fix_plan(
+                issue_number,
+                issue_title,
+                issue_body,
+                repo_files=repo_files,
+                file_contents=file_contents,
+            )
             ls_run.end(outputs=plan.model_dump())
             return plan
 
@@ -174,11 +318,23 @@ async def plan_release_fix(
             f"- [{m.get('source_repo')}] {m.get('title')}: {m.get('resolution')}"
             for m in memories
         )
+        tree_text = "\n".join(f"- {p}" for p in (repo_files or [])[:40]) or "(not inspected)"
+        files_text = ""
+        if file_contents:
+            chunks = [
+                f"### {path}\n```\n{body[:1500]}\n```"
+                for path, body in list(file_contents.items())[:6]
+            ]
+            files_text = "\n\n".join(chunks)
+
         prompt = (
             f"GitHub Issue #{issue_number}: {issue_title}\n"
             f"Body:\n{issue_body}\n\n"
+            f"Discovered Repository File Tree:\n{tree_text}\n\n"
+            f"Relevant Existing File Contents:\n{files_text or 'None'}\n\n"
             f"Similar Past Experience (MongoDB Atlas Vector Search):\n{memory_summary or 'None'}\n\n"
-            "Generate a FixPlan targeting `service_config.json`."
+            "Inspect the repository structure above, decide whether this repo uses OpenTofu "
+            "(`target_kind='opentofu'` + `tf_dir`) or `service_config.json`, and generate the FixPlan."
         )
         result = await agent.run(prompt)
         ls_run.end(outputs=result.output.model_dump())

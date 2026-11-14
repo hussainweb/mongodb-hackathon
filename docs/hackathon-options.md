@@ -63,6 +63,12 @@ These four options avoid inventing contrived synthetic enterprise datasets and a
   - `policies`: Declarative allow / `require_voice_sudo` / deny rules enforced with MongoDB JSON Schema validation.
   - `action_intents`: One doc per tool call with `authority_chain`, `rationale`, `tool` + polymorphic `args`, `gate_decision` (+ voice transcript), `pre_state` snapshot, registered `compensating_action`, `post_state`, and `rollback.status`.
   - `runs` (watched via **Atlas Change Streams**): Live `halt_requested` and `rewind_to_step` triggers that interrupt the worker before the next step.
+  - `action_precedents` (**Atlas Vector Search**): Past blocked, approved, and rolled-back intents + rationales for semantic risk gating.
+- **Why MongoDB Atlas Shines Here:**
+  - *Polymorphic `$jsonSchema` enforcement:* Enforces at the DB engine level that no intent can exist without `authority_chain`, `rationale`, and `compensating_action`, even though every tool's `args` and `pre_state` differ.
+  - *Change Streams as kill-switch bus:* Sub-second push interrupts (`watch()` + resume tokens) halt the agent and run reverse rollbacks with zero polling.
+  - *TTL indexes + ACID transactions:* Voice-approved `delegations` self-expire via native TTL indexes; multi-doc transactions prevent races between tool execution and `STOP & REWIND`.
+  - *Atlas Hybrid/Vector Search (Voyage AI):* Catches innocuously phrased intents that semantically resemble past rolled-back incidents and auto-escalates them to Voice Sudo.
 - **The Pitch:** Teams don't block agents because models aren't smart enough—they block them because agents have no `sudo` and no `Ctrl+Z`. Instead of building "an agent for X," this builds the auditable execution runtime wrapping any Pydantic AI agent.
 - **Believable Targets (Zero Fake Data):** Drives real actions against resources we control directly: a test GitHub repository (issues/branches/PRs), local Docker containers/files, and a local DB or S3-compatible store.
 - **ElevenLabs Hook:** Spoken `"sudo"` approval channel—when an agent hits a high-risk action gate, it calls out for voice confirmation before proceeding.
@@ -104,6 +110,10 @@ These four options avoid inventing contrived synthetic enterprise datasets and a
   - `workflow_runs` & `step_checkpoints`: Idempotency keys, `status` (`pending | sent | verified_took_effect | failed`), retry counts, external resource IDs, and probe results.
   - `api_drift_playbooks` (**Atlas Vector Search**): Past OpenAPI diffs, field-mapping rules, error signatures, and confidence scores (invalidatable if a fix turns out wrong).
   - `service_events`: Live HTTP request/response traces and verification probe evidence.
+- **Why MongoDB Atlas Shines Here:**
+  - *Atlas Hybrid/Vector Search (Voyage AI):* Combines exact HTTP status/endpoint filters with semantic similarity over OpenAPI `v1 -> v2` diffs so the agent matches renamed fields (`webhook_url -> callback_uri`) mid-run.
+  - *ACID checkpoints:* Multi-document transactions atomically record `sent -> verified_took_effect` alongside idempotency keys so `SIGKILL` recovery never double-provisions.
+  - *Schema-flexible HTTP traces + Change Streams:* Stores arbitrary drifting v1/v2 payloads without migrations and pushes live verification/adaptation state to the browser via `watch()`.
 - **Believable Data / Targets:** 2–3 lightweight FastAPI/Docker mock external services with real OpenAPI `v1` and `v2` specs (renamed fields, changed auth/status codes, and a `202 Accepted` endpoint that silently drops async work). The OpenAPI specs, HTTP traces, and Atlas checkpoints *are* the data.
 - **ElevenLabs Hook:** Voice escalation when the agent encounters an ambiguous breaking schema change with low confidence, asking the operator how to map the new field.
 - **Partner / GTM Role:** Anchor the business pain of silent webhook/integration failures, narrate the chaos sequence, and trigger the live chaos buttons during the demo.
@@ -146,6 +156,11 @@ These four options avoid inventing contrived synthetic enterprise datasets and a
   - `tenant_memories` (**Atlas Vector Search**): Memory text + embedding, strict `tenant_id` / `role_acl` filter fields, `source_authority`, `created_at`, `expires_at` (TTL), and `superseded_by` / `status` (`active | invalidated | expired`).
   - `memory_audit_log`: Who wrote, read, corrected, or expired each memory and which `run_id` consumed it.
   - `counterfactual_runs`: Before-and-after decision snapshots (`memory_snapshot_v1 -> decision_A` vs `memory_snapshot_v2 -> decision_B`) proving causal impact.
+- **Why MongoDB Atlas Shines Here:**
+  - *Atlas Vector Search with strict pre-filtering:* Enforces `tenant_id`, `role_acl`, and `status: "active"` *inside* the vector index query on one shared collection—preventing cross-tenant bleed by construction.
+  - *Native TTL indexes + status supersession:* Time-bound rules auto-expire at the DB layer; spoken corrections flip `status: "invalidated"` and record the replacement's authority lineage cleanly.
+  - *Change Streams for reactive counterfactual replay:* Watching `tenant_memories` automatically triggers re-evaluation and streams the live `BEFORE -> AFTER` decision flip to the UI.
+  - *Rich nested provenance:* Stores full decision graphs, retrieved memory IDs, and LangSmith eval scores in one self-contained `counterfactual_runs` document.
 - **Believable Data / Targets (Real Public Corpora):**
   - *Path A:* Real public GitHub issues/PRs and maintainer policies across 2–3 open-source repositories (each org = an isolated tenant ACL).
   - *Path B:* Real Toronto Open Data (municipal bylaws, 311 routing rules, or ward/department policies).
@@ -185,6 +200,11 @@ These four options avoid inventing contrived synthetic enterprise datasets and a
   - `disruption_events`: Raw real feed snapshots (Environment Canada / TTC JSON), normalized severity, affected corridors.
   - `dispatch_runs` & `delivery_checkpoints`: Per-channel `sent` vs `verified_acked` state, retry/fallback history, crash-resume cursor.
   - `dispatch_policies`: Max auto-broadcast radius, quiet-hours / approval thresholds, operator approval records.
+- **Why MongoDB Atlas Shines Here:**
+  - *Zero-migration multi-source ingestion:* Environment Canada weather feeds and TTC transit alerts have totally different nested schemas—both land directly in `disruption_events` without brittle ETL tables.
+  - *Native `2dsphere` geospatial + Vector Search:* Combines MongoDB geospatial queries (matching alert coordinates/corridors to affected zones) with Atlas Vector Search over past disruption responses to rank rerouting plans.
+  - *Change Streams + TTL:* Watches live feed updates and voice approvals in real time (`watch()`), while TTL indexes automatically expire stale disruption alerts.
+  - *`$jsonSchema` + atomic delivery checkpoints:* Enforces broadcast-cap policy invariants in the DB and tracks `only-sent (200)` vs `verified_acked` per channel.
 - **Believable Data / Targets:** Live Environment Canada / OpenWeather alerts and Toronto Open Data / TTC feeds driving a local dispatch and webhook/notification target.
 - **Partner / GTM Role:** Own the civic/operations narrative and live voice interaction on stage.
 - **Watch-out:** Keep feed parsing minimal (1–2 clean JSON endpoints) so GTFS/feed quirks don't consume the 6-hour build budget.

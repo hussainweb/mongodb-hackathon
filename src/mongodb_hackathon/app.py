@@ -129,7 +129,7 @@ async def _build_run_snapshot(
         (
             cp.external_ref
             for cp in checkpoints
-            if cp.step_key == "step_2_open_pr_and_comment" and cp.external_ref
+            if cp.step_key == "step_4_github_pr" and cp.external_ref
         ),
         "",
     )
@@ -137,7 +137,7 @@ async def _build_run_snapshot(
         (
             str(cp.post_state.get("branch", ""))
             for cp in checkpoints
-            if cp.step_key == "step_1_branch_and_patch"
+            if cp.step_key == "step_2_github_patch"
         ),
         "",
     )

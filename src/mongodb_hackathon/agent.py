@@ -57,7 +57,8 @@ def create_planner_agent(model: Model) -> Agent[None, FixPlan]:
             "You are a senior release reliability engineer. Given a GitHub issue, current service "
             "configuration, and similar historical resolutions from MongoDB Atlas Vector Search, "
             "produce a clean, minimal FixPlan updating service_config.json, a deployment_config dict "
-            "compatible with /v1/deployments (webhook_url, rate_limit), and a concise PR summary."
+            "with integer `rate_limit` (1..10000, e.g. 300), `service_name` string, and "
+            "`webhook_url` string compatible with /v1/deployments, and a concise PR summary."
         ),
     )
 
@@ -72,8 +73,9 @@ def create_drift_agent(model: Model) -> Agent[None, DriftAdaptationPlan]:
             "You are an autonomous integration recovery agent. A downstream service rejected our "
             "request because its API contract changed mid-run. Inspect the error detail, the live "
             "OpenAPI spec excerpt, and retrieved MongoDB Vector Search drift playbooks. Return a "
-            "valid DriftAdaptationPlan with the new endpoint path, full adapted_payload JSON, "
-            "exact field_mapping, confidence (0..1), and whether human confirmation is needed."
+            "valid DriftAdaptationPlan with `adapted_endpoint` (e.g. '/v2/deployments'), full "
+            "`adapted_payload` JSON (using integer `max_rps` and `env_tier` in {'staging','canary','production'}), "
+            "exact `field_mapping`, `confidence` (0..1), and whether human confirmation is needed."
         ),
     )
 

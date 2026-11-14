@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -324,6 +325,17 @@ async def _execute_job_impl(
                 idempotency_key=f"{run_id}:step_3_deploy",
                 attempts=(cp3.attempts + 1) if cp3 else 1,
             )
+
+            def _coerce_positive_int(value: Any, default: int = 300) -> int:
+                if isinstance(value, bool):
+                    return default
+                if isinstance(value, int):
+                    return max(1, min(10000, value))
+                match = re.search(r"\d+", str(value))
+                if match:
+                    return max(1, min(10000, int(match.group(0))))
+                return default
+
             v1_payload: dict[str, Any] = {
                 "service_name": str(
                     fix_plan.deployment_config.get("service_name", "payments-webhook")
@@ -335,7 +347,9 @@ async def _execute_job_impl(
                         "webhook_url", "https://hooks.example.internal/v1/ingest"
                     )
                 ),
-                "rate_limit": int(fix_plan.deployment_config.get("rate_limit", 300)),
+                "rate_limit": _coerce_positive_int(
+                    fix_plan.deployment_config.get("rate_limit", 300)
+                ),
                 "idempotency_key": idemp_key,
             }
 
@@ -417,8 +431,28 @@ async def _execute_job_impl(
                             "diagnosis": adapt_plan.diagnosis,
                         },
                     )
+                    adapted_payload = dict(adapt_plan.adapted_payload)
+                    adapted_payload.setdefault(
+                        "service_name", v1_payload["service_name"]
+                    )
+                    adapted_payload.setdefault("branch", branch_name)
+                    adapted_payload.setdefault("commit_sha", commit_sha)
+                    adapted_payload.setdefault(
+                        "callback_uri", v1_payload["webhook_url"]
+                    )
+                    adapted_payload["max_rps"] = _coerce_positive_int(
+                        adapted_payload.get("max_rps", v1_payload["rate_limit"])
+                    )
+                    if adapted_payload.get("env_tier") not in {
+                        "staging",
+                        "canary",
+                        "production",
+                    }:
+                        adapted_payload["env_tier"] = "staging"
+                    adapted_payload["idempotency_key"] = idemp_key
+
                     resp = await http.post(
-                        adapt_plan.adapted_endpoint, json=adapt_plan.adapted_payload
+                        adapt_plan.adapted_endpoint, json=adapted_payload
                     )
 
                 resp_json = resp.json()

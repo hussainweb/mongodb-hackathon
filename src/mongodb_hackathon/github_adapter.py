@@ -40,6 +40,9 @@ class GitHubSandboxAdapter:
     def has_token(self) -> bool:
         return bool(self._token)
 
+    def _is_dry_run(self, repo: str) -> bool:
+        return (not self._token) or repo.startswith("dry-run/")
+
     def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
@@ -150,6 +153,8 @@ class GitHubSandboxAdapter:
 
     async def list_repo_labels(self, repo: str) -> list[str]:
         """List live label names in a repository."""
+        if self._is_dry_run(repo):
+            return ["bug", "verified"]
         async with httpx.AsyncClient(
             base_url=GITHUB_API, headers=self._headers(), timeout=12.0
         ) as client:
@@ -164,6 +169,13 @@ class GitHubSandboxAdapter:
         base_branch: str = "main",
     ) -> dict[str, Any]:
         """Idempotently ensure branch exists; safe to re-run after SIGKILL crash."""
+        if self._is_dry_run(repo):
+            return {
+                "branch": branch_name,
+                "sha": "dryrunsha123456",
+                "created": True,
+                "url": f"https://github.com/{repo}/tree/{branch_name}",
+            }
         async with httpx.AsyncClient(
             base_url=GITHUB_API, headers=self._headers(), timeout=12.0
         ) as client:
@@ -204,6 +216,13 @@ class GitHubSandboxAdapter:
         commit_message: str,
     ) -> dict[str, Any]:
         """Idempotently commit file content to branch; skips commit if identical."""
+        if self._is_dry_run(repo):
+            return {
+                "path": path,
+                "commit_sha": "dryruncommit5678",
+                "changed": True,
+                "url": f"https://github.com/{repo}/blob/{branch_name}/{path}",
+            }
         async with httpx.AsyncClient(
             base_url=GITHUB_API, headers=self._headers(), timeout=15.0
         ) as client:
@@ -253,6 +272,12 @@ class GitHubSandboxAdapter:
         base_branch: str = "main",
     ) -> dict[str, Any]:
         """Idempotently ensure an open PR exists for head_branch."""
+        if self._is_dry_run(repo):
+            return {
+                "pr_number": 99,
+                "html_url": f"https://github.com/{repo}/pull/99",
+                "created": True,
+            }
         owner = repo.split("/", 1)[0]
         async with httpx.AsyncClient(
             base_url=GITHUB_API, headers=self._headers(), timeout=15.0
@@ -300,6 +325,12 @@ class GitHubSandboxAdapter:
         body: str,
     ) -> dict[str, Any]:
         """Post a comment once per marker so crash-resume never double-comments."""
+        if self._is_dry_run(repo):
+            return {
+                "comment_id": 1001,
+                "created": True,
+                "html_url": f"https://github.com/{repo}/issues/{issue_number}#issuecomment-1001",
+            }
         async with httpx.AsyncClient(
             base_url=GITHUB_API, headers=self._headers(), timeout=12.0
         ) as client:
@@ -332,6 +363,8 @@ class GitHubSandboxAdapter:
         self, repo: str, issue_number: int, label: str = "verified"
     ) -> list[str]:
         """Adapt to repo label taxonomy (verified vs status:verified) and apply label."""
+        if self._is_dry_run(repo):
+            return [label]
         existing_labels = await self.list_repo_labels(repo)
         chosen = label
         if label not in existing_labels:
@@ -363,6 +396,8 @@ class GitHubSandboxAdapter:
         remove_labels: list[str] | None = None,
     ) -> dict[str, Any]:
         """Execute compensating rollback on GitHub (close PR, delete branch, remove labels)."""
+        if self._is_dry_run(repo):
+            return {"rolled_back": True, "actions": ["dry-run rollback"]}
         actions: list[str] = []
         async with httpx.AsyncClient(
             base_url=GITHUB_API, headers=self._headers(), timeout=12.0

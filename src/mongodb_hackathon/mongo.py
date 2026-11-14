@@ -335,7 +335,9 @@ class MongoStore:
                 }
             }
         ]
-        async with await self.events.watch(pipeline, full_document="updateLookup") as stream:
+        async with await self.events.watch(
+            pipeline, full_document="updateLookup"
+        ) as stream:
             async for change in stream:
                 doc = change.get("fullDocument")
                 if doc:

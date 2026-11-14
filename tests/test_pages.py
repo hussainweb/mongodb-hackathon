@@ -293,6 +293,8 @@ async def test_workspace_prompt_composer_and_pacing_presets() -> None:
                 assert 'id="btn-toggle-add-repo"' in html
                 assert 'id="add-repo-form"' in html
                 assert 'id="example-chips"' in html
+                assert 'onclick="selectChip(' not in html
+                assert 'btn.addEventListener("click"' in html
 
                 # 2. Pacing segmented control with Demo 0.5s active by default
                 assert 'id="pacing-control"' in html

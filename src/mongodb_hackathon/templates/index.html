@@ -372,27 +372,30 @@
     const container = document.getElementById("example-chips");
     if (!container) return;
 
-    const chips = [];
+    container.innerHTML = "";
+    const chipItems = [];
 
     // 1. Repo default prompt chip
     if (repoDefaultPrompt) {
-      chips.push(`
-        <button type="button" class="chip" onclick="selectChip(this, ${JSON.stringify(repoDefaultPrompt)}, 0, 'Repo Default Prompt')">
-          <span style="color: var(--mongo); font-weight: 600;">★</span>
-          <span>Default: ${escapeHtml(repoDefaultPrompt.substring(0, 48))}…</span>
-        </button>
-      `);
+      chipItems.push({
+        prompt: repoDefaultPrompt,
+        issueNum: 0,
+        issueTitle: "Repo Default Prompt",
+        prefix: '<span style="color: var(--mongo); font-weight: 600;">★</span>',
+        label: `Default: ${repoDefaultPrompt.substring(0, 48)}…`,
+      });
     }
 
     // 2. Open issue chips
     (issues || []).forEach((iss) => {
       const promptBody = iss.body ? `${iss.title}\n\n${iss.body}` : iss.title;
-      chips.push(`
-        <button type="button" class="chip" onclick="selectChip(this, ${JSON.stringify(promptBody)}, ${iss.number}, ${JSON.stringify(iss.title)})">
-          <span style="font-weight: 600;">#${iss.number}</span>
-          <span>${escapeHtml(iss.title.substring(0, 42))}…</span>
-        </button>
-      `);
+      chipItems.push({
+        prompt: promptBody,
+        issueNum: iss.number,
+        issueTitle: iss.title,
+        prefix: `<span style="font-weight: 600;">#${escapeHtml(String(iss.number))}</span>`,
+        label: `${iss.title.substring(0, 42)}…`,
+      });
     });
 
     // 3. Custom release scenarios
@@ -412,14 +415,25 @@
     ];
 
     customScenarios.forEach((sc) => {
-      chips.push(`
-        <button type="button" class="chip" onclick="selectChip(this, ${JSON.stringify(sc.prompt)}, 0, ${JSON.stringify(sc.title)})">
-          <span>${escapeHtml(sc.title)}</span>
-        </button>
-      `);
+      chipItems.push({
+        prompt: sc.prompt,
+        issueNum: 0,
+        issueTitle: sc.title,
+        prefix: "",
+        label: sc.title,
+      });
     });
 
-    container.innerHTML = chips.join("");
+    chipItems.forEach((item) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip";
+      btn.innerHTML = `${item.prefix ? `${item.prefix} ` : ""}<span>${escapeHtml(item.label)}</span>`;
+      btn.addEventListener("click", () => {
+        selectChip(btn, item.prompt, item.issueNum, item.issueTitle);
+      });
+      container.appendChild(btn);
+    });
   }
 
   async function onRepoChange(repo) {

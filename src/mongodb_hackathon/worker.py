@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import re
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,12 @@ from mongodb_hackathon.models import (
     utc_now,
 )
 from mongodb_hackathon.mongo import MongoStore
+from mongodb_hackathon.tofu_adapter import (
+    apply_opentofu,
+    prepare_workspace,
+    probe_workers,
+    rollback_opentofu,
+)
 from mongodb_hackathon.voice import synthesize_briefing
 
 AUDIO_DIR = Path(__file__).resolve().parent / "static" / "audio"
@@ -62,6 +69,12 @@ async def _check_halt_or_rollback(
         if action_type == "delete_deployment" and comp.get("deployment_id"):
             await target_client.delete(f"/deployments/{comp['deployment_id']}")
             rollback_notes.append(f"reverted deployment {comp['deployment_id']}")
+        elif action_type == "opentofu_rollback":
+            note = await rollback_opentofu(
+                repo=run.repo,
+                pre_files=dict(comp.get("pre_files", {})),
+            )
+            rollback_notes.append(note)
         elif action_type == "github_rollback":
             res = await github.rollback_changes(
                 repo=run.repo,
@@ -162,6 +175,405 @@ async def _pause_if_step_by_step(
             break
 
 
+def _coerce_positive_int(value: Any, default: int = 300) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return max(1, min(10000, value))
+    match = re.search(r"\d+", str(value))
+    if match:
+        return max(1, min(10000, int(match.group(0))))
+    return default
+
+
+async def _execute_opentofu_step3(
+    db_store: MongoStore,
+    gh: GitHubSandboxAdapter,
+    http: httpx.AsyncClient,
+    run: JobRun,
+    fix_plan: FixPlan,
+    branch_name: str,
+    commit_sha: str,
+    cp3: StepCheckpoint,
+    cfg: Settings,
+    model_override: Model | None,
+) -> tuple[bool, str, dict[str, Any]]:
+    """Run OpenTofu apply + independent Docker container /health probe for Step 3."""
+    run_id = run.run_id
+    desired_workers = max(
+        1,
+        min(8, _coerce_positive_int(fix_plan.deployment_config.get("worker_count", 1), default=1)),
+    )
+    max_rps = _coerce_positive_int(
+        fix_plan.deployment_config.get("max_rps", fix_plan.deployment_config.get("rate_limit", 300)),
+        default=300,
+    )
+    env_tier = str(fix_plan.deployment_config.get("env_tier", "staging"))
+    service_name = str(fix_plan.deployment_config.get("service_name", "payments-webhook"))
+    callback_uri = str(
+        fix_plan.deployment_config.get(
+            "callback_uri",
+            fix_plan.deployment_config.get("webhook_url", "https://hooks.example.internal/v1/ingest"),
+        )
+    )
+
+    chaos_mode = "normal"
+    with suppress(httpx.HTTPError, ValueError):
+        h_resp = await http.get("/health")
+        if h_resp.status_code == 200:
+            chaos_mode = str(h_resp.json().get("chaos_mode", "normal"))
+
+    run_latest = await db_store.get_run(run_id)
+    if not (run_latest and run_latest.approval_granted) and (
+        chaos_mode == "require_approval_gate" or env_tier == "production"
+    ):
+        brief = (
+            f"Release {run_id} hit policy approval gate for OpenTofu deployment "
+            f"of {service_name} ({desired_workers} workers in {env_tier}). Say approve to apply."
+        )
+        approved = await _wait_for_operator_approval(db_store, run_id, brief, cfg)
+        if not approved:
+            return False, "", {}
+
+    ws_dir, pre_files = await prepare_workspace(
+        github=gh,
+        repo=run.repo,
+        branch_name=branch_name,
+        tf_dir=fix_plan.tf_dir,
+        patch_filename=fix_plan.patch_filename,
+        patch_content=fix_plan.patch_content,
+    )
+
+    worker_image = "finishline-worker:v2" if chaos_mode == "drift_v2" else "finishline-worker:v1"
+    use_v2_env = False
+    silent_drop = chaos_mode == "silent_drop_202"
+    dep_id = f"tofu-{ws_dir.name}-{desired_workers}x"
+
+    for attempt in range(1, 5):
+        cp3.attempts = attempt
+        cp3.sent_payload = {
+            "tf_dir": fix_plan.tf_dir or ".",
+            "worker_count": desired_workers,
+            "max_rps": max_rps,
+            "env_tier": env_tier,
+            "worker_image": worker_image,
+            "use_v2_env": use_v2_env,
+        }
+        apply_res = await apply_opentofu(
+            ws_dir=ws_dir,
+            repo=run.repo,
+            worker_image=worker_image,
+            use_v2_env=use_v2_env,
+            silent_drop_first_probe=silent_drop and attempt == 1,
+            extra_vars={
+                "worker_count": desired_workers,
+                "max_rps": max_rps,
+                "service_name": service_name,
+                "env_tier": env_tier,
+                "callback_uri": callback_uri,
+            },
+        )
+        cp3.status = StepStatus.SENT_UNVERIFIED
+        cp3.external_ref = dep_id
+        await db_store.upsert_checkpoint_atomic(cp3)
+
+        verify_data = await probe_workers(
+            apply_res.get("workers", []),
+            expected_count=desired_workers,
+        )
+        cp3.probe_result = verify_data
+
+        if verify_data.get("drift_errors"):
+            err_detail = "; ".join(verify_data["drift_errors"])
+            cp3.status = StepStatus.DRIFTED
+            cp3.error_message = err_detail[:400]
+            await db_store.upsert_checkpoint_atomic(cp3)
+            await db_store.emit_event(
+                run_id,
+                "step_3_deploy_and_verify",
+                "drift_detected",
+                f"Docker workers rejected v1 env contract ({err_detail}). Querying Atlas Vector Search...",
+                {"drift_errors": verify_data["drift_errors"]},
+            )
+            playbooks = await db_store.search_experience(
+                f"OpenTofu Docker worker v1 v2 contract drift {err_detail}",
+                kind="drift_playbook",
+                limit=3,
+                source_repo=run.repo,
+            )
+            adapt_plan = await adapt_to_schema_drift(
+                error_detail=err_detail,
+                openapi_excerpt={"container_env_v2": ["MAX_RPS", "CALLBACK_URI", "ENV_TIER"]},
+                original_payload={
+                    "service_name": service_name,
+                    "branch": branch_name,
+                    "commit_sha": commit_sha,
+                    "webhook_url": callback_uri,
+                    "rate_limit": max_rps,
+                    "idempotency_key": f"{run_id}-deploy",
+                },
+                playbooks=playbooks,
+                settings=cfg,
+                model_override=model_override,
+            )
+            cp3.status = StepStatus.ADAPTED
+            cp3.adaptation_used = adapt_plan.diagnosis
+            await db_store.upsert_checkpoint_atomic(cp3)
+            await db_store.emit_event(
+                run_id,
+                "step_3_deploy_and_verify",
+                "drift_adapted",
+                f"Adapted OpenTofu container env to v2 contract: {adapt_plan.field_mapping}",
+                {"mapping": adapt_plan.field_mapping},
+            )
+            use_v2_env = True
+            await asyncio.sleep(0.3)
+            continue
+
+        if verify_data.get("active"):
+            cp3.status = StepStatus.VERIFIED_TOOK_EFFECT
+            cp3.took_effect = True
+            cp3.post_state = {
+                "deployment_id": dep_id,
+                "verify": verify_data,
+                "tf_dir": fix_plan.tf_dir or ".",
+            }
+            cp3.compensating_action = {
+                "type": "opentofu_rollback",
+                "pre_files": pre_files,
+            }
+            await db_store.upsert_checkpoint_atomic(cp3, run_step=3)
+            await db_store.emit_event(
+                run_id,
+                "step_3_deploy_and_verify",
+                "step_verified",
+                (
+                    f"Verified {verify_data.get('worker_count')} Docker container(s) via /health "
+                    f"(total capacity {verify_data.get('max_rps')} RPS, api={verify_data.get('api_version')})."
+                ),
+                {
+                    "deployment_id": dep_id,
+                    "worker_count": verify_data.get("worker_count"),
+                    "api_version": verify_data.get("api_version"),
+                },
+            )
+            return True, dep_id, verify_data
+
+        await db_store.upsert_checkpoint_atomic(cp3)
+        await db_store.emit_event(
+            run_id,
+            "step_3_deploy_and_verify",
+            "probe_mismatch",
+            "Caught silent failure! `tofu apply` exited 0, but container /health probe reported active=False. Re-probing...",
+            {"probe": verify_data},
+        )
+        await asyncio.sleep(0.4)
+
+    cp3.status = StepStatus.FAILED
+    cp3.error_message = "OpenTofu container health verification failed after retries"
+    await db_store.upsert_checkpoint_atomic(cp3)
+    await db_store.update_run(run_id, status=RunStatus.FAILED.value, worker_pid=None)
+    return False, "", {}
+
+
+async def _execute_http_step3(
+    db_store: MongoStore,
+    http: httpx.AsyncClient,
+    run: JobRun,
+    fix_plan: FixPlan,
+    branch_name: str,
+    commit_sha: str,
+    cp3: StepCheckpoint,
+    cfg: Settings,
+    model_override: Model | None,
+) -> tuple[bool, str, dict[str, Any]]:
+    """Run :8001 HTTP deployment + independent /verify probe for Step 3."""
+    run_id = run.run_id
+    idemp_key = f"{run_id}-deploy"
+    v1_payload: dict[str, Any] = {
+        "service_name": str(
+            fix_plan.deployment_config.get("service_name", "payments-webhook")
+        ),
+        "branch": branch_name,
+        "commit_sha": commit_sha,
+        "webhook_url": str(
+            fix_plan.deployment_config.get(
+                "webhook_url", "https://hooks.example.internal/v1/ingest"
+            )
+        ),
+        "rate_limit": _coerce_positive_int(
+            fix_plan.deployment_config.get("rate_limit", 300)
+        ),
+        "idempotency_key": idemp_key,
+    }
+
+    dep_id = ""
+    verify_data: dict[str, Any] = {}
+    adapted_endpoint = ""
+    adapted_payload: dict[str, Any] | None = None
+
+    run_latest = await db_store.get_run(run_id)
+    if not (run_latest and run_latest.approval_granted):
+        health_resp = await http.get("/health")
+        gate_active = (
+            health_resp.json().get("chaos_mode") == "require_approval_gate"
+            if health_resp.status_code == 200
+            else False
+        )
+        if gate_active:
+            brief = (
+                f"Release {run_id} hit policy approval gate on target service "
+                f"for {v1_payload['service_name']}. Say approve to continue deployment."
+            )
+            approved = await _wait_for_operator_approval(db_store, run_id, brief, cfg)
+            if not approved:
+                return False, "", {}
+
+    for attempt in range(1, 5):
+        cp3.attempts = attempt
+        if adapted_endpoint and adapted_payload is not None:
+            cp3.sent_payload = adapted_payload
+            resp = await http.post(adapted_endpoint, json=adapted_payload)
+        else:
+            cp3.sent_payload = v1_payload
+            resp = await http.post("/v1/deployments", json=v1_payload)
+
+        if resp.status_code == 422:
+            err_body = resp.text
+            cp3.status = StepStatus.DRIFTED
+            cp3.error_message = err_body[:400]
+            await db_store.upsert_checkpoint_atomic(cp3)
+            await db_store.emit_event(
+                run_id,
+                "step_3_deploy_and_verify",
+                "drift_detected",
+                "Target rejected /v1/deployments (422). Querying Atlas Vector Search playbooks...",
+                {"status_code": 422},
+            )
+
+            openapi_resp = await http.get("/openapi.json")
+            openapi_json = openapi_resp.json() if openapi_resp.status_code == 200 else {}
+            playbooks = await db_store.search_experience(
+                f"API contract drift 422 {err_body}",
+                kind="drift_playbook",
+                limit=3,
+                source_repo=run.repo,
+            )
+            adapt_plan = await adapt_to_schema_drift(
+                error_detail=err_body,
+                openapi_excerpt=openapi_json,
+                original_payload=v1_payload,
+                playbooks=playbooks,
+                settings=cfg,
+                model_override=model_override,
+            )
+
+            run_latest = await db_store.get_run(run_id)
+            if not (run_latest and run_latest.approval_granted) and (
+                adapt_plan.needs_human_confirmation or adapt_plan.confidence < 0.75
+            ):
+                brief = (
+                    f"Release {run_id} hit API schema drift on target service. "
+                    f"Proposed mapping: {json.dumps(adapt_plan.field_mapping)}. "
+                    "Say approve to continue deployment."
+                )
+                approved = await _wait_for_operator_approval(db_store, run_id, brief, cfg)
+                if not approved:
+                    return False, "", {}
+
+            cp3.status = StepStatus.ADAPTED
+            cp3.adaptation_used = adapt_plan.diagnosis
+            await db_store.upsert_checkpoint_atomic(cp3)
+            await db_store.emit_event(
+                run_id,
+                "step_3_deploy_and_verify",
+                "drift_adapted",
+                f"Adapted to {adapt_plan.adapted_endpoint}: {adapt_plan.field_mapping}",
+                {
+                    "mapping": adapt_plan.field_mapping,
+                    "diagnosis": adapt_plan.diagnosis,
+                },
+            )
+            adapted_payload = dict(adapt_plan.adapted_payload)
+            adapted_payload.setdefault("service_name", v1_payload["service_name"])
+            adapted_payload.setdefault("branch", branch_name)
+            adapted_payload.setdefault("commit_sha", commit_sha)
+            adapted_payload.setdefault("callback_uri", v1_payload["webhook_url"])
+            adapted_payload["max_rps"] = _coerce_positive_int(
+                adapted_payload.get("max_rps", v1_payload["rate_limit"])
+            )
+            if adapted_payload.get("env_tier") not in {"staging", "canary", "production"}:
+                adapted_payload["env_tier"] = "staging"
+            adapted_payload["idempotency_key"] = idemp_key
+            adapted_endpoint = adapt_plan.adapted_endpoint
+            resp = await http.post(adapted_endpoint, json=adapted_payload)
+
+        if resp.status_code >= 400:
+            cp3.error_message = f"HTTP {resp.status_code}: {resp.text[:300]}"
+            await db_store.upsert_checkpoint_atomic(cp3)
+            await db_store.emit_event(
+                run_id,
+                "step_3_deploy_and_verify",
+                "deploy_http_error",
+                f"Target deployment endpoint returned HTTP {resp.status_code}; retrying...",
+                {"http_status": resp.status_code},
+            )
+            await asyncio.sleep(0.4)
+            continue
+
+        resp_json = resp.json()
+        dep_id = str(resp_json.get("deployment_id", ""))
+        cp3.status = StepStatus.SENT_UNVERIFIED
+        cp3.external_ref = dep_id
+        await db_store.upsert_checkpoint_atomic(cp3)
+
+        probe_resp = await http.get(f"/verify/{dep_id}")
+        verify_data = (
+            probe_resp.json() if probe_resp.status_code == 200 else {"active": False}
+        )
+        cp3.probe_result = verify_data
+
+        if verify_data.get("active"):
+            cp3.status = StepStatus.VERIFIED_TOOK_EFFECT
+            cp3.took_effect = True
+            cp3.post_state = {"deployment_id": dep_id, "verify": verify_data}
+            cp3.compensating_action = {
+                "type": "delete_deployment",
+                "deployment_id": dep_id,
+            }
+            await db_store.upsert_checkpoint_atomic(cp3, run_step=3)
+            await db_store.emit_event(
+                run_id,
+                "step_3_deploy_and_verify",
+                "step_verified",
+                f"Verified deployment {dep_id} took effect (active=True).",
+                {
+                    "deployment_id": dep_id,
+                    "api_version": verify_data.get("api_version"),
+                },
+            )
+            return True, dep_id, verify_data
+
+        await db_store.upsert_checkpoint_atomic(cp3)
+        await db_store.emit_event(
+            run_id,
+            "step_3_deploy_and_verify",
+            "probe_mismatch",
+            (
+                f"Caught silent drop! POST returned {resp.status_code} (only-sent), "
+                f"but GET /verify/{dep_id} reported active=False. Retrying idempotently..."
+            ),
+            {"http_status": resp.status_code, "probe": verify_data},
+        )
+        await asyncio.sleep(0.4)
+
+    cp3.status = StepStatus.FAILED
+    cp3.error_message = "Deployment verification failed after retries"
+    await db_store.upsert_checkpoint_atomic(cp3)
+    await db_store.update_run(run_id, status=RunStatus.FAILED.value, worker_pid=None)
+    return False, "", {}
+
+
 async def execute_job(
     run_id: str,
     store: MongoStore | None = None,
@@ -251,6 +663,7 @@ async def _execute_job_impl(
                 idempotency_key=f"{run_id}:step_1_plan",
                 attempts=(cp1.attempts + 1) if cp1 else 1,
             )
+            repo_files, file_contents = await gh.discover_infra_context(run.repo)
             memories = await db_store.search_experience(
                 f"{run.issue_title}\n{run.issue_body}",
                 kind=["repo_rule", "github_fix"],
@@ -264,20 +677,27 @@ async def _execute_job_impl(
                 memories=memories,
                 settings=cfg,
                 model_override=model_override,
+                repo_files=repo_files,
+                file_contents=file_contents,
             )
             cp1.status = StepStatus.VERIFIED_TOOK_EFFECT
             cp1.took_effect = True
             cp1.post_state = {
                 "fix_plan": fix_plan.model_dump(mode="json"),
                 "recalled_memories": [m.get("title", "") for m in memories],
+                "discovered_files": list(file_contents.keys()),
             }
             await db_store.upsert_checkpoint_atomic(cp1, run_step=1)
             await db_store.emit_event(
                 run_id,
                 "step_1_plan",
                 "step_verified",
-                f"Planned patch using {len(memories)} Atlas Vector Search precedents.",
-                {"memories": cp1.post_state["recalled_memories"]},
+                f"Planned {fix_plan.patch_filename} using {len(memories)} Atlas Vector Search precedents.",
+                {
+                    "memories": cp1.post_state["recalled_memories"],
+                    "discovered_files": cp1.post_state["discovered_files"],
+                    "target_kind": fix_plan.target_kind,
+                },
             )
 
         await _pause_if_step_by_step(db_store, run_id, 1)
@@ -365,234 +785,53 @@ async def _execute_job_impl(
                 f"Skipped Step 3 (deployment {dep_id} already verified active).",
             )
         else:
-            idemp_key = f"{run_id}-deploy"
             cp3 = StepCheckpoint(
                 run_id=run_id,
                 step_key="step_3_deploy_and_verify",
                 step_seq=3,
-                title="Deploy to target service & verify took-effect",
+                title=(
+                    "Apply OpenTofu & verify Docker container /health"
+                    if (
+                        fix_plan.target_kind == "opentofu"
+                        or fix_plan.patch_filename.endswith((".tf", ".tfvars"))
+                    )
+                    else "Deploy to target service & verify took-effect"
+                ),
                 idempotency_key=f"{run_id}:step_3_deploy",
                 attempts=(cp3.attempts + 1) if cp3 else 1,
             )
 
-            def _coerce_positive_int(value: Any, default: int = 300) -> int:
-                if isinstance(value, bool):
-                    return default
-                if isinstance(value, int):
-                    return max(1, min(10000, value))
-                match = re.search(r"\d+", str(value))
-                if match:
-                    return max(1, min(10000, int(match.group(0))))
-                return default
-
-            v1_payload: dict[str, Any] = {
-                "service_name": str(
-                    fix_plan.deployment_config.get("service_name", "payments-webhook")
-                ),
-                "branch": branch_name,
-                "commit_sha": commit_sha,
-                "webhook_url": str(
-                    fix_plan.deployment_config.get(
-                        "webhook_url", "https://hooks.example.internal/v1/ingest"
-                    )
-                ),
-                "rate_limit": _coerce_positive_int(
-                    fix_plan.deployment_config.get("rate_limit", 300)
-                ),
-                "idempotency_key": idemp_key,
-            }
-
-            dep_id = ""
-            verify_data = {}
-            adapted_note = ""
-            adapted_endpoint = ""
-            adapted_payload: dict[str, Any] | None = None
-
-            # Check operator approval gate up-front when chaos_mode=require_approval_gate
-            run_latest = await db_store.get_run(run_id)
-            if not (run_latest and run_latest.approval_granted):
-                health_resp = await http.get("/health")
-                gate_active = (
-                    health_resp.json().get("chaos_mode") == "require_approval_gate"
-                    if health_resp.status_code == 200
-                    else False
+            is_opentofu = (
+                fix_plan.target_kind == "opentofu"
+                or fix_plan.patch_filename.endswith((".tf", ".tfvars"))
+            )
+            if is_opentofu:
+                ok, dep_id, verify_data = await _execute_opentofu_step3(
+                    db_store=db_store,
+                    gh=gh,
+                    http=http,
+                    run=run,
+                    fix_plan=fix_plan,
+                    branch_name=branch_name,
+                    commit_sha=commit_sha,
+                    cp3=cp3,
+                    cfg=cfg,
+                    model_override=model_override,
                 )
-                if gate_active:
-                    brief = (
-                        f"Release {run_id} hit policy approval gate on target service "
-                        f"for {v1_payload['service_name']}. Say approve to continue deployment."
-                    )
-                    approved = await _wait_for_operator_approval(
-                        db_store, run_id, brief, cfg
-                    )
-                    if not approved:
-                        await _check_halt_or_rollback(db_store, gh, http, run_id)
-                        return await db_store.get_run(run_id) or run
-
-            for attempt in range(1, 5):
-                cp3.attempts = attempt
-                if adapted_endpoint and adapted_payload is not None:
-                    cp3.sent_payload = adapted_payload
-                    resp = await http.post(adapted_endpoint, json=adapted_payload)
-                else:
-                    cp3.sent_payload = v1_payload
-                    resp = await http.post("/v1/deployments", json=v1_payload)
-
-                if resp.status_code == 422:
-                    # Schema drift detected! Query OpenAPI + Vector Search playbooks and adapt.
-                    err_body = resp.text
-                    cp3.status = StepStatus.DRIFTED
-                    cp3.error_message = err_body[:400]
-                    await db_store.upsert_checkpoint_atomic(cp3)
-                    await db_store.emit_event(
-                        run_id,
-                        "step_3_deploy_and_verify",
-                        "drift_detected",
-                        "Target rejected /v1/deployments (422). Querying Atlas Vector Search playbooks...",
-                        {"status_code": 422},
-                    )
-
-                    openapi_resp = await http.get("/openapi.json")
-                    openapi_json = (
-                        openapi_resp.json() if openapi_resp.status_code == 200 else {}
-                    )
-                    playbooks = await db_store.search_experience(
-                        f"API contract drift 422 {err_body}",
-                        kind="drift_playbook",
-                        limit=3,
-                        source_repo=run.repo,
-                    )
-                    adapt_plan = await adapt_to_schema_drift(
-                        error_detail=err_body,
-                        openapi_excerpt=openapi_json,
-                        original_payload=v1_payload,
-                        playbooks=playbooks,
-                        settings=cfg,
-                        model_override=model_override,
-                    )
-
-                    run_latest = await db_store.get_run(run_id)
-                    if not (run_latest and run_latest.approval_granted) and (
-                        adapt_plan.needs_human_confirmation
-                        or adapt_plan.confidence < 0.75
-                    ):
-                        brief = (
-                            f"Release {run_id} hit API schema drift on target service. "
-                            f"Proposed mapping: {json.dumps(adapt_plan.field_mapping)}. "
-                            "Say approve to continue deployment."
-                        )
-                        approved = await _wait_for_operator_approval(
-                            db_store, run_id, brief, cfg
-                        )
-                        if not approved:
-                            await _check_halt_or_rollback(db_store, gh, http, run_id)
-                            return await db_store.get_run(run_id) or run
-
-                    cp3.status = StepStatus.ADAPTED
-                    adapted_note = adapt_plan.diagnosis
-                    cp3.adaptation_used = adapted_note
-                    await db_store.upsert_checkpoint_atomic(cp3)
-                    await db_store.emit_event(
-                        run_id,
-                        "step_3_deploy_and_verify",
-                        "drift_adapted",
-                        f"Adapted to {adapt_plan.adapted_endpoint}: {adapt_plan.field_mapping}",
-                        {
-                            "mapping": adapt_plan.field_mapping,
-                            "diagnosis": adapt_plan.diagnosis,
-                        },
-                    )
-                    adapted_payload = dict(adapt_plan.adapted_payload)
-                    adapted_payload.setdefault(
-                        "service_name", v1_payload["service_name"]
-                    )
-                    adapted_payload.setdefault("branch", branch_name)
-                    adapted_payload.setdefault("commit_sha", commit_sha)
-                    adapted_payload.setdefault(
-                        "callback_uri", v1_payload["webhook_url"]
-                    )
-                    adapted_payload["max_rps"] = _coerce_positive_int(
-                        adapted_payload.get("max_rps", v1_payload["rate_limit"])
-                    )
-                    if adapted_payload.get("env_tier") not in {
-                        "staging",
-                        "canary",
-                        "production",
-                    }:
-                        adapted_payload["env_tier"] = "staging"
-                    adapted_payload["idempotency_key"] = idemp_key
-                    adapted_endpoint = adapt_plan.adapted_endpoint
-
-                    resp = await http.post(adapted_endpoint, json=adapted_payload)
-
-                if resp.status_code >= 400:
-                    cp3.error_message = f"HTTP {resp.status_code}: {resp.text[:300]}"
-                    await db_store.upsert_checkpoint_atomic(cp3)
-                    await db_store.emit_event(
-                        run_id,
-                        "step_3_deploy_and_verify",
-                        "deploy_http_error",
-                        f"Target deployment endpoint returned HTTP {resp.status_code}; retrying...",
-                        {"http_status": resp.status_code},
-                    )
-                    await asyncio.sleep(0.4)
-                    continue
-
-                resp_json = resp.json()
-                dep_id = str(resp_json.get("deployment_id", ""))
-                cp3.status = StepStatus.SENT_UNVERIFIED
-                cp3.external_ref = dep_id
-                await db_store.upsert_checkpoint_atomic(cp3)
-
-                # Independent verification probe: separate only-sent from took-effect
-                probe_resp = await http.get(f"/verify/{dep_id}")
-                verify_data = (
-                    probe_resp.json()
-                    if probe_resp.status_code == 200
-                    else {"active": False}
-                )
-                cp3.probe_result = verify_data
-
-                if verify_data.get("active"):
-                    cp3.status = StepStatus.VERIFIED_TOOK_EFFECT
-                    cp3.took_effect = True
-                    cp3.post_state = {"deployment_id": dep_id, "verify": verify_data}
-                    cp3.compensating_action = {
-                        "type": "delete_deployment",
-                        "deployment_id": dep_id,
-                    }
-                    await db_store.upsert_checkpoint_atomic(cp3, run_step=3)
-                    await db_store.emit_event(
-                        run_id,
-                        "step_3_deploy_and_verify",
-                        "step_verified",
-                        f"Verified deployment {dep_id} took effect (active=True).",
-                        {
-                            "deployment_id": dep_id,
-                            "api_version": verify_data.get("api_version"),
-                        },
-                    )
-                    break
-
-                await db_store.upsert_checkpoint_atomic(cp3)
-                await db_store.emit_event(
-                    run_id,
-                    "step_3_deploy_and_verify",
-                    "probe_mismatch",
-                    (
-                        f"Caught silent drop! POST returned {resp.status_code} (only-sent), "
-                        f"but GET /verify/{dep_id} reported active=False. Retrying idempotently..."
-                    ),
-                    {"http_status": resp.status_code, "probe": verify_data},
-                )
-                await asyncio.sleep(0.4)
             else:
-                cp3.status = StepStatus.FAILED
-                cp3.error_message = "Deployment verification failed after retries"
-                await db_store.upsert_checkpoint_atomic(cp3)
-                await db_store.update_run(
-                    run_id, status=RunStatus.FAILED.value, worker_pid=None
+                ok, dep_id, verify_data = await _execute_http_step3(
+                    db_store=db_store,
+                    http=http,
+                    run=run,
+                    fix_plan=fix_plan,
+                    branch_name=branch_name,
+                    commit_sha=commit_sha,
+                    cp3=cp3,
+                    cfg=cfg,
+                    model_override=model_override,
                 )
+            if not ok:
+                await _check_halt_or_rollback(db_store, gh, http, run_id)
                 return await db_store.get_run(run_id) or run
 
         await _pause_if_step_by_step(db_store, run_id, 3)

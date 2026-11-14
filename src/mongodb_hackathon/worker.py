@@ -34,7 +34,7 @@ from mongodb_hackathon.models import (
 from mongodb_hackathon.mongo import MongoStore
 from mongodb_hackathon.voice import synthesize_briefing
 
-AUDIO_DIR = Path("static/audio")
+AUDIO_DIR = Path(__file__).resolve().parent / "static" / "audio"
 
 
 async def _check_halt_or_rollback(
@@ -250,7 +250,10 @@ async def _execute_job_impl(
             return await db_store.get_run(run_id) or run
 
         # --- STEP 2: Create Branch & Commit Patch on GitHub ---
-        branch_name = f"finishline/issue-{run.issue_number}-{run_id[:6]}"
+        branch_slug = (
+            f"issue-{run.issue_number}" if run.issue_number > 0 else "task"
+        )
+        branch_name = f"finishline/{branch_slug}-{run_id[:6]}"
         cp2 = existing_cps.get("step_2_github_patch")
         if cp2 and cp2.status == StepStatus.VERIFIED_TOOK_EFFECT:
             commit_sha = str(cp2.post_state.get("commit_sha", "HEAD"))
@@ -356,11 +359,38 @@ async def _execute_job_impl(
             dep_id = ""
             verify_data = {}
             adapted_note = ""
+            adapted_endpoint = ""
+            adapted_payload: dict[str, Any] | None = None
+
+            # Check operator approval gate up-front when chaos_mode=require_approval_gate
+            run_latest = await db_store.get_run(run_id)
+            if not (run_latest and run_latest.approval_granted):
+                health_resp = await http.get("/health")
+                gate_active = (
+                    health_resp.json().get("chaos_mode") == "require_approval_gate"
+                    if health_resp.status_code == 200
+                    else False
+                )
+                if gate_active:
+                    brief = (
+                        f"Release {run_id} hit policy approval gate on target service "
+                        f"for {v1_payload['service_name']}. Say approve to continue deployment."
+                    )
+                    approved = await _wait_for_operator_approval(
+                        db_store, run_id, brief, cfg
+                    )
+                    if not approved:
+                        await _check_halt_or_rollback(db_store, gh, http, run_id)
+                        return await db_store.get_run(run_id) or run
 
             for attempt in range(1, 5):
                 cp3.attempts = attempt
-                cp3.sent_payload = v1_payload
-                resp = await http.post("/v1/deployments", json=v1_payload)
+                if adapted_endpoint and adapted_payload is not None:
+                    cp3.sent_payload = adapted_payload
+                    resp = await http.post(adapted_endpoint, json=adapted_payload)
+                else:
+                    cp3.sent_payload = v1_payload
+                    resp = await http.post("/v1/deployments", json=v1_payload)
 
                 if resp.status_code == 422:
                     # Schema drift detected! Query OpenAPI + Vector Search playbooks and adapt.
@@ -394,15 +424,9 @@ async def _execute_job_impl(
                         model_override=model_override,
                     )
 
-                    state_resp = await http.get("/health")
-                    chaos_active = (
-                        state_resp.json().get("chaos_mode") == "require_approval_gate"
-                        if state_resp.status_code == 200
-                        else False
-                    )
-                    if (
+                    run_latest = await db_store.get_run(run_id)
+                    if not (run_latest and run_latest.approval_granted) and (
                         adapt_plan.needs_human_confirmation
-                        or chaos_active
                         or adapt_plan.confidence < 0.75
                     ):
                         brief = (
@@ -450,10 +474,22 @@ async def _execute_job_impl(
                     }:
                         adapted_payload["env_tier"] = "staging"
                     adapted_payload["idempotency_key"] = idemp_key
+                    adapted_endpoint = adapt_plan.adapted_endpoint
 
-                    resp = await http.post(
-                        adapt_plan.adapted_endpoint, json=adapted_payload
+                    resp = await http.post(adapted_endpoint, json=adapted_payload)
+
+                if resp.status_code >= 400:
+                    cp3.error_message = f"HTTP {resp.status_code}: {resp.text[:300]}"
+                    await db_store.upsert_checkpoint_atomic(cp3)
+                    await db_store.emit_event(
+                        run_id,
+                        "step_3_deploy_and_verify",
+                        "deploy_http_error",
+                        f"Target deployment endpoint returned HTTP {resp.status_code}; retrying...",
+                        {"http_status": resp.status_code},
                     )
+                    await asyncio.sleep(0.4)
+                    continue
 
                 resp_json = resp.json()
                 dep_id = str(resp_json.get("deployment_id", ""))
@@ -550,9 +586,10 @@ async def _execute_job_impl(
                 body=evidence_md,
             )
             marker = f"<!-- finishline-run:{run_id} -->"
+            comment_target = run.issue_number if run.issue_number > 0 else int(pr_info["pr_number"])
             comment_info = await gh.ensure_issue_comment(
                 repo=run.repo,
-                issue_number=run.issue_number,
+                issue_number=comment_target,
                 marker=marker,
                 body=(
                     f"FinishLine verified deployment `{dep_id}` took effect and opened PR "
@@ -560,7 +597,7 @@ async def _execute_job_impl(
                 ),
             )
             applied_labels = await gh.apply_verified_label(
-                run.repo, run.issue_number, "verified"
+                run.repo, comment_target, "verified"
             )
             pr_url = str(pr_info["html_url"])
             cp4.status = StepStatus.VERIFIED_TOOK_EFFECT
@@ -582,12 +619,12 @@ async def _execute_job_impl(
                 run_id,
                 "step_4_github_pr",
                 "step_verified",
-                f"Opened PR #{pr_info['pr_number']} and verified issue comment/labels.",
+                f"Opened PR #{pr_info['pr_number']} and verified PR/issue comment & labels.",
                 {"pr_url": pr_url, "labels": applied_labels},
             )
 
         # --- STEP 5: Persist Learned Experience & Complete ---
-        summary = f"Completed all 4 stages cleanly. PR: {pr_url} | Deployment: {dep_id}"
+        summary = f"Completed all 5 stages cleanly. PR: {pr_url} | Deployment: {dep_id}"
         if cp3.adaptation_used:
             learned_id = f"learned-{run_id}"
             learned_text = f"Recovered from contract drift during {run.repo}#{run.issue_number}: {cp3.adaptation_used}"

@@ -13,18 +13,24 @@ from pydantic_ai.models.test import TestModel
 from mongodb_hackathon.agent import adapt_to_schema_drift, plan_release_fix
 from mongodb_hackathon.config import Settings
 from mongodb_hackathon.github_adapter import GitHubSandboxAdapter
-from mongodb_hackathon.models import JobRun, RunStatus, StepCheckpoint, StepStatus
+from mongodb_hackathon.models import (
+    ChaosMode,
+    JobRun,
+    RunStatus,
+    StepCheckpoint,
+    StepStatus,
+)
 from mongodb_hackathon.mongo import MongoStore
 from mongodb_hackathon.target_service import app as target_app
 from mongodb_hackathon.target_service import state as target_state
-from mongodb_hackathon.worker import execute_job
+from mongodb_hackathon.worker import AUDIO_DIR, execute_job
 
 
 async def _cleanup_run(store: MongoStore, run_id: str) -> None:
     await store.runs.delete_many({"run_id": run_id})
     await store.checkpoints.delete_many({"run_id": run_id})
     await store.events.delete_many({"run_id": run_id})
-    await store.memories.delete_many({"memory_id": f"learned-{run_id[:8]}"})
+    await store.memories.delete_many({"memory_id": f"learned-{run_id}"})
 
 
 @pytest_asyncio.fixture
@@ -286,6 +292,68 @@ async def test_compensating_rollback_removes_deployment(
             )
             assert rolled_back.status == RunStatus.ROLLED_BACK
             assert len(target_state.deployments) == 0
+    finally:
+        await _cleanup_run(atlas_store, run_id)
+        target_state.reset()
+
+
+@pytest.mark.asyncio
+async def test_audio_dir_matches_package_static_mount() -> None:
+    """Worker AUDIO_DIR must resolve inside src/mongodb_hackathon/static/audio."""
+    assert AUDIO_DIR.is_absolute()
+    assert AUDIO_DIR.parts[-3:] == ("mongodb_hackathon", "static", "audio")
+
+
+@pytest.mark.asyncio
+async def test_approval_gate_and_freeform_issue_zero(
+    atlas_store: MongoStore,
+) -> None:
+    """REQUIRE_APPROVAL_GATE triggers AWAITING_APPROVAL even without 422 drift, and issue_number=0 completes."""
+    import asyncio
+
+    target_state.reset()
+    target_state.chaos_mode = ChaosMode.REQUIRE_APPROVAL_GATE
+    run_id = f"tst-{uuid.uuid4().hex[:8]}"
+    try:
+        await atlas_store.create_run(
+            JobRun(
+                run_id=run_id,
+                repo="dry-run/finishline-demo-sandbox",
+                issue_number=0,
+                issue_title="Free-form staging rollout",
+                issue_body="Roll out staging config and pause for operator approval.",
+                target_service_url="http://test-target",
+            )
+        )
+
+        async def _approve_when_waiting() -> None:
+            for _ in range(40):
+                cur = await atlas_store.get_run(run_id)
+                if cur and cur.status == RunStatus.AWAITING_APPROVAL:
+                    await atlas_store.update_run(
+                        run_id, approval_granted=True, approval_note="Approved in test"
+                    )
+                    return
+                await asyncio.sleep(0.15)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=target_app), base_url="http://test-target"
+        ) as client:
+            approver = asyncio.create_task(_approve_when_waiting())
+            final_run = await execute_job(
+                run_id=run_id,
+                store=atlas_store,
+                github=_dry_github(),
+                target_client=client,
+                step_delay=0.0,
+            )
+            await approver
+
+        assert final_run.status == RunStatus.COMPLETED
+        assert len(target_state.deployments) == 1
+        events = await atlas_store.list_events(run_id, limit=50)
+        assert any(ev.event_type == "awaiting_approval" for ev in events)
+        assert any(ev.event_type == "approval_received" for ev in events)
     finally:
         await _cleanup_run(atlas_store, run_id)
         target_state.reset()

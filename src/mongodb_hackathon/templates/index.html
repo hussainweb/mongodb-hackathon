@@ -575,7 +575,7 @@
       `).join("");
       document.getElementById("step-list").innerHTML = stepHtml || '<div class="empty-state">Starting worker…</div>';
 
-      const evHtml = events.slice(0, 16).map((ev) => `
+      const evHtml = events.slice(-16).map((ev) => `
         <div class="feed-row">
           <div class="feed-type">${escapeHtml(ev.event_type)}</div>
           <div class="feed-msg">${escapeHtml(ev.message)}</div>

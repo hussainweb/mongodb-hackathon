@@ -70,6 +70,7 @@ class GitHubSandboxAdapter:
 
             owner, repo_name = full_name.split("/", 1)
             repo_resp = await client.get(f"/repos/{full_name}")
+            created = False
             if repo_resp.status_code == 404:
                 create_resp = await client.post(
                     "/user/repos",
@@ -81,9 +82,15 @@ class GitHubSandboxAdapter:
                     },
                 )
                 create_resp.raise_for_status()
+                created = True
 
             await self._seed_sandbox_defaults(client, full_name)
-            return {"repo": full_name, "html_url": f"https://github.com/{full_name}"}
+            return {
+                "repo": full_name,
+                "html_url": f"https://github.com/{full_name}",
+                "created": created,
+                "status": "created" if created else "exists",
+            }
 
     async def _seed_sandbox_defaults(
         self, client: httpx.AsyncClient, full_name: str

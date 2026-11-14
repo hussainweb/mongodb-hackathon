@@ -109,7 +109,7 @@ async def _fetch_target_state(http: httpx.AsyncClient) -> dict[str, Any]:
         "online": False,
         "chaos_mode": ChaosMode.NORMAL.value,
         "deployments": [],
-        "request_log": [],
+        "recent_requests": [],
     }
 
 
@@ -264,6 +264,11 @@ async def bootstrap_sandbox(request: Request, repo: str = "") -> JSONResponse:
     """Ensure the public GitHub sandbox repository, seed issues, and Atlas playbooks."""
     store, github, _, settings = _deps(request)
     target_repo = repo.strip() or settings.github_sandbox_repo.strip()
+    if not github.has_token:
+        raise HTTPException(
+            status_code=400,
+            detail="No GitHub token available (`GITHUB_TOKEN` or `gh auth login`).",
+        )
     info = await github.ensure_sandbox_repo(target_repo)
     resolved_repo = str(
         info.get("repo", target_repo or "dry-run/finishline-demo-sandbox")

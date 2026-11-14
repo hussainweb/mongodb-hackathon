@@ -16,3 +16,4 @@ build/
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+src/mongodb_hackathon/static/audio/*.mp3

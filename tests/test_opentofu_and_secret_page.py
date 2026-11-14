@@ -411,3 +411,66 @@ async def test_super_secret_page_and_active_run_resolution_unit() -> None:
             assert r_active.status_code == 200
             assert r_active.json()["run"]["run_id"] == "recent-completed"
             assert r_active.json()["run"]["worker_alive"] is False
+
+
+def test_sample_repos_loaded_from_disk() -> None:
+    """Verify samples/payments-infra and samples/billing-stack provide real Docker + OpenTofu files."""
+    from mongodb_hackathon.github_adapter import SAMPLE_SPECS, load_sample_files
+
+    assert "payments-infra" in SAMPLE_SPECS
+    assert "billing-stack" in SAMPLE_SPECS
+
+    gh = GitHubSandboxAdapter(Settings(), token="")
+    pay_files = load_sample_files("payments-infra")
+    assert "app/Dockerfile" in pay_files
+    assert "app/server.py" in pay_files
+    assert "terraform/environments/staging/main.tf" in pay_files
+    assert "terraform/environments/staging/terraform.tfvars" in pay_files
+    assert gh._dry_run_file_map("dry-run/payments-infra") == pay_files
+
+    bill_files = load_sample_files("billing-stack")
+    assert "app/Dockerfile" in bill_files
+    assert "app/server.py" in bill_files
+    assert "deploy/tf/main.tf" in bill_files
+    assert "deploy/tf/prod.tfvars" in bill_files
+    assert gh._dry_run_file_map("dry-run/billing-stack") == bill_files
+
+
+@pytest.mark.asyncio
+async def test_samples_api_and_infra_page_rendering() -> None:
+    """Verify /api/samples and /infra expose the demo sample repositories."""
+    import mongodb_hackathon.app as ctrl_mod
+
+    class _MinStore:
+        async def list_runs(self, limit: int = 25) -> list[Any]:
+            return []
+
+        async def get_run(self, run_id: str) -> Any:
+            return None
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=target_app), base_url="http://test-target"
+    ) as tc:
+        ctrl_mod.app.state._external_store = True
+        ctrl_mod.app.state.store = _MinStore()
+        ctrl_mod.app.state.settings = Settings()
+        ctrl_mod.app.state.github = GitHubSandboxAdapter(Settings(), token="")
+        ctrl_mod.app.state.target_client = tc
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=ctrl_mod.app),
+            base_url="http://test-control",
+        ) as ac:
+            r_samples = await ac.get("/api/samples")
+            assert r_samples.status_code == 200
+            sample_ids = {s["sample_id"] for s in r_samples.json()["samples"]}
+            assert {"payments-infra", "billing-stack"}.issubset(sample_ids)
+
+            r_404 = await ac.post("/api/samples/does-not-exist/start-docker")
+            assert r_404.status_code == 404
+
+            r_infra = await ac.get("/infra")
+            assert r_infra.status_code == 200
+            assert "Demo Sample Repositories (Docker + OpenTofu)" in r_infra.text
+            assert "startSampleDocker('payments-infra'" in r_infra.text
+            assert "publishSampleGithub('billing-stack'" in r_infra.text

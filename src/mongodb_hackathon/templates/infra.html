@@ -197,6 +197,46 @@
       </div>
     </div>
 
+    <!-- Demo Sample Repositories (Real Docker + GitHub) -->
+    <div>
+      <div class="section-head" style="margin-bottom: 10px;">
+        <div>
+          <h2>3. Demo Sample Repositories (Docker + OpenTofu)</h2>
+          <div class="section-head-desc">Launch real baseline Docker containers with OpenTofu or publish a sample repo to GitHub for live PRs.</div>
+        </div>
+        <span class="badge badge-info" id="live-docker-count">
+          {{ (docker_topology.workers | length) if docker_topology and docker_topology.workers else 0 }} Docker container(s)
+        </span>
+      </div>
+
+      <div id="sample-result-banner" class="sim-result-banner hidden" style="margin-bottom: 10px;" aria-live="polite"></div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px;">
+        {% for s in samples or [] %}
+          <div style="border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--surface); display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px;">
+              <strong style="font-size: 13.5px;">{{ s.label }}</strong>
+              <span class="badge badge-neutral mono" style="font-size: 11px;">{{ s.env_tier }}</span>
+            </div>
+            <div style="font-size: 12px; color: var(--text-secondary);">{{ s.description }}</div>
+            <div class="mono" style="font-size: 11px; color: var(--muted);">
+              {{ s.tf_dir }}/{{ s.tfvars_name }} · {{ s.worker_count }}x {{ s.service_name }} ({{ s.max_rps }} RPS)
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;">
+              <button type="button" class="btn btn-primary btn-sm" onclick="startSampleDocker('{{ s.sample_id }}', this)">Start Docker</button>
+              <button type="button" class="btn btn-ghost btn-sm" onclick="stopSampleDocker('{{ s.sample_id }}', this)">Stop</button>
+              <button
+                type="button"
+                class="btn btn-sm"
+                onclick="publishSampleGithub('{{ s.sample_id }}', this)"
+                {% if not has_github_token %}disabled title="Configure GITHUB_TOKEN or gh auth login"{% endif %}
+              >Publish to GitHub</button>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+
     <!-- Progressive Disclosure: OpenAPI Schema & Drift Diff -->
     <details class="schema-diff-card" id="openapi-drift-details" {% if is_drifted %}open{% endif %}>
       <summary class="schema-diff-head" style="cursor: pointer; user-select: none;">
@@ -557,5 +597,86 @@
       renderTargetState(ev.detail.target);
     }
   });
+
+  function showSampleResult(kind, title, detailHtml) {
+    const el = document.getElementById("sample-result-banner");
+    if (!el) return;
+    el.className = `sim-result-banner is-${kind}`;
+    el.innerHTML = `
+      <div style="font-weight: 600;">${FinishLineLiveRun.escapeHtml(title)}</div>
+      <div class="mono" style="font-size: 12px; color: var(--text-secondary); word-break: break-word;">${detailHtml}</div>
+    `;
+  }
+
+  function updateDockerCountBadge(topology) {
+    const badge = document.getElementById("live-docker-count");
+    if (!badge || !topology) return;
+    const count = (topology.workers || []).length;
+    badge.textContent = `${count} Docker container(s)`;
+    badge.className = count > 0 ? "badge badge-ok" : "badge badge-info";
+  }
+
+  async function startSampleDocker(sampleId, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const resp = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/start-docker`, { method: "POST" });
+      const data = await resp.json();
+      if (!resp.ok) {
+        showSampleResult("danger", `Failed to start ${sampleId}`, FinishLineLiveRun.escapeHtml(data.detail || "OpenTofu apply failed"));
+        return;
+      }
+      updateDockerCountBadge(data.topology);
+      const workers = (data.topology && data.topology.workers) || [];
+      showSampleResult(
+        "ok",
+        `Started baseline Docker container(s) for ${sampleId}`,
+        FinishLineLiveRun.escapeHtml(`${workers.length} running · open /super-secret-page to watch live traffic`)
+      );
+    } catch (e) {
+      showSampleResult("danger", `Failed to start ${sampleId}`, FinishLineLiveRun.escapeHtml(String(e)));
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function stopSampleDocker(sampleId, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const resp = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/stop-docker`, { method: "POST" });
+      const data = await resp.json();
+      if (!resp.ok) {
+        showSampleResult("danger", `Failed to stop ${sampleId}`, FinishLineLiveRun.escapeHtml(data.detail || "OpenTofu destroy failed"));
+        return;
+      }
+      updateDockerCountBadge(data.topology);
+      showSampleResult("ok", `Stopped Docker containers for ${sampleId}`, FinishLineLiveRun.escapeHtml(data.message || "destroyed"));
+    } catch (e) {
+      showSampleResult("danger", `Failed to stop ${sampleId}`, FinishLineLiveRun.escapeHtml(String(e)));
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function publishSampleGithub(sampleId, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const resp = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/publish-github`, { method: "POST" });
+      const data = await resp.json();
+      if (!resp.ok) {
+        showSampleResult("danger", `Failed to publish ${sampleId}`, FinishLineLiveRun.escapeHtml(data.detail || "GitHub publish failed"));
+        return;
+      }
+      const url = FinishLineLiveRun.escapeHtml(data.html_url || "");
+      showSampleResult(
+        "ok",
+        `Published ${data.repo} to GitHub`,
+        `${data.files_synced} file(s) synced · <a href="${url}" target="_blank" rel="noopener">${url}</a> · added to Workspace repo selector`
+      );
+    } catch (e) {
+      showSampleResult("danger", `Failed to publish ${sampleId}`, FinishLineLiveRun.escapeHtml(String(e)));
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
 </script>
 {% endblock %}

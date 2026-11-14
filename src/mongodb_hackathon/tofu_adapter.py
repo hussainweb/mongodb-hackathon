@@ -13,7 +13,11 @@ from typing import Any
 
 import httpx
 
-from mongodb_hackathon.github_adapter import GitHubSandboxAdapter
+from mongodb_hackathon.github_adapter import (
+    SAMPLE_SPECS,
+    GitHubSandboxAdapter,
+    load_sample_files,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INFRA_TEMPLATE_DIR = REPO_ROOT / "infra" / "template"
@@ -386,3 +390,62 @@ async def inspect_live_docker_workers(simulate_traffic: bool = False) -> dict[st
         "total_capacity_rps": sum(w["max_rps"] for w in workers if w["active"]),
         "traffic": traffic,
     }
+
+
+async def launch_sample_baseline(
+    sample_id: str,
+    repo_slug: str = "",
+) -> dict[str, Any]:
+    """Copy a sample's OpenTofu config into its workspace and launch its baseline Docker worker(s)."""
+    if sample_id not in SAMPLE_SPECS:
+        raise ValueError(f"Unknown sample '{sample_id}'")
+    spec = SAMPLE_SPECS[sample_id]
+    target_repo = repo_slug.strip() or str(spec["dry_run_repo"])
+    ws_dir = workspace_dir_for_repo(target_repo)
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    _seed_cached_providers(ws_dir)
+
+    tf_prefix = str(spec["tf_dir"]).strip("/") + "/"
+    sample_files = load_sample_files(sample_id)
+    for rel_path, content in sample_files.items():
+        if rel_path.startswith(tf_prefix) and rel_path.endswith((".tf", ".tfvars")):
+            local_name = posixpath.basename(rel_path)
+            (ws_dir / local_name).write_text(content, encoding="utf-8")
+
+    apply_res = await apply_opentofu(
+        ws_dir=ws_dir,
+        repo=target_repo,
+        worker_image="finishline-worker:v1",
+        extra_vars={
+            "worker_count": int(spec["worker_count"]),
+            "max_rps": int(spec["max_rps"]),
+            "service_name": str(spec["service_name"]),
+            "env_tier": str(spec["env_tier"]),
+        },
+    )
+    probe = await probe_workers(
+        apply_res.get("workers", []),
+        expected_count=int(spec["worker_count"]),
+    )
+    topology = await inspect_live_docker_workers(simulate_traffic=False)
+    return {
+        "sample_id": sample_id,
+        "repo": target_repo,
+        "workspace": str(ws_dir),
+        "probe": probe,
+        "topology": topology,
+    }
+
+
+async def stop_sample_baseline(
+    sample_id: str,
+    repo_slug: str = "",
+) -> dict[str, Any]:
+    """Destroy OpenTofu-managed Docker containers for a sample workspace."""
+    if sample_id not in SAMPLE_SPECS:
+        raise ValueError(f"Unknown sample '{sample_id}'")
+    spec = SAMPLE_SPECS[sample_id]
+    target_repo = repo_slug.strip() or str(spec["dry_run_repo"])
+    msg = await rollback_opentofu(target_repo, pre_files={})
+    topology = await inspect_live_docker_workers(simulate_traffic=False)
+    return {"sample_id": sample_id, "repo": target_repo, "message": msg, "topology": topology}

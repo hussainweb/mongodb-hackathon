@@ -28,7 +28,7 @@ from pymongo.errors import PyMongoError
 from mongodb_hackathon.agent import plan_release_fix
 from mongodb_hackathon.config import Settings, get_settings
 from mongodb_hackathon.embeddings import embed_text
-from mongodb_hackathon.github_adapter import GitHubSandboxAdapter
+from mongodb_hackathon.github_adapter import SAMPLE_SPECS, GitHubSandboxAdapter
 from mongodb_hackathon.models import (
     ChaosMode,
     DemoRepo,
@@ -41,7 +41,11 @@ from mongodb_hackathon.models import (
 )
 from mongodb_hackathon.mongo import MongoStore
 from mongodb_hackathon.seed import _build_starter_repos, seed_atlas
-from mongodb_hackathon.tofu_adapter import inspect_live_docker_workers
+from mongodb_hackathon.tofu_adapter import (
+    inspect_live_docker_workers,
+    launch_sample_baseline,
+    stop_sample_baseline,
+)
 from mongodb_hackathon.voice import transcribe_operator_audio
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -475,7 +479,7 @@ async def index(request: Request) -> HTMLResponse:
 @app.get("/infra", response_class=HTMLResponse)
 async def infra_page(request: Request) -> HTMLResponse:
     """Render the standalone Infrastructure and Target Microservice control room."""
-    store, _, http, settings = _deps(request)
+    store, github, http, settings = _deps(request)
     target = await _fetch_target_state(http)
     openapi_info = await _fetch_target_openapi(http)
     initial_run_id = await _resolve_active_run_id(store)
@@ -485,6 +489,7 @@ async def infra_page(request: Request) -> HTMLResponse:
         else None
     )
     repo = settings.github_sandbox_repo.strip()
+    docker_topology = await inspect_live_docker_workers(simulate_traffic=False)
 
     return templates.TemplateResponse(
         request,
@@ -497,6 +502,9 @@ async def infra_page(request: Request) -> HTMLResponse:
             "initial_run_id": initial_run_id,
             "initial_snapshot": initial_snapshot,
             "sandbox_repo": repo or "dry-run/finishline-demo-sandbox",
+            "samples": list(SAMPLE_SPECS.values()),
+            "docker_topology": docker_topology,
+            "has_github_token": github.has_token,
         },
     )
 
@@ -577,6 +585,72 @@ async def get_docker_topology(simulate: bool = False) -> JSONResponse:
     """Return live OpenTofu-managed Docker worker containers and optional live /ingest traffic tick."""
     data = await inspect_live_docker_workers(simulate_traffic=simulate)
     return JSONResponse(data)
+
+
+@app.get("/api/samples")
+async def list_samples() -> JSONResponse:
+    """Return available lightweight Docker + OpenTofu demo samples and live container topology."""
+    topology = await inspect_live_docker_workers(simulate_traffic=False)
+    return JSONResponse({"samples": list(SAMPLE_SPECS.values()), "topology": topology})
+
+
+@app.post("/api/samples/{sample_id}/start-docker")
+async def start_sample_docker(sample_id: str, repo: str = "") -> JSONResponse:
+    """Launch baseline Docker container(s) for a sample repository via OpenTofu."""
+    if sample_id not in SAMPLE_SPECS:
+        raise HTTPException(status_code=404, detail=f"Unknown sample '{sample_id}'")
+    try:
+        res = await launch_sample_baseline(sample_id, repo_slug=repo)
+        return JSONResponse(res)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/samples/{sample_id}/stop-docker")
+async def stop_sample_docker(sample_id: str, repo: str = "") -> JSONResponse:
+    """Destroy OpenTofu-managed Docker container(s) for a sample repository."""
+    if sample_id not in SAMPLE_SPECS:
+        raise HTTPException(status_code=404, detail=f"Unknown sample '{sample_id}'")
+    try:
+        res = await stop_sample_baseline(sample_id, repo_slug=repo)
+        return JSONResponse(res)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/samples/{sample_id}/publish-github")
+async def publish_sample_to_github(
+    request: Request,
+    sample_id: str,
+    repo: str = "",
+) -> JSONResponse:
+    """Create/sync a real public GitHub repo from samples/<sample_id>/ and register it in FinishLine."""
+    if sample_id not in SAMPLE_SPECS:
+        raise HTTPException(status_code=404, detail=f"Unknown sample '{sample_id}'")
+    store, github, _, settings = _deps(request)
+    if not github.has_token:
+        raise HTTPException(
+            status_code=400,
+            detail="No GitHub token available (`GITHUB_TOKEN` or `gh auth login`).",
+        )
+    spec = SAMPLE_SPECS[sample_id]
+    try:
+        info = await github.publish_sample_repo(sample_id, full_name=repo.strip())
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub publish failed: {exc}") from exc
+
+    full_name = str(info["repo"])
+    settings.github_sandbox_repo = full_name
+    await store.upsert_repo(
+        DemoRepo(
+            repo=full_name,
+            label=f"{spec['label']} (Live GitHub)",
+            description=str(spec["description"]),
+            is_live=True,
+            default_prompt=str(spec["default_prompt"]),
+        )
+    )
+    return JSONResponse(info)
 
 
 @app.post("/sandbox/bootstrap")

@@ -14,25 +14,72 @@ from mongodb_hackathon.config import Settings, get_settings
 GITHUB_API = "https://api.github.com"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INFRA_TEMPLATE_DIR = REPO_ROOT / "infra" / "template"
+SAMPLES_DIR = REPO_ROOT / "samples"
 
-DRY_RUN_TF_LAYOUTS: dict[str, dict[str, Any]] = {
-    "dry-run/payments-infra": {
+SAMPLE_SPECS: dict[str, dict[str, Any]] = {
+    "payments-infra": {
+        "sample_id": "payments-infra",
+        "label": "Payments Infra (Webhook Worker)",
+        "description": "Lightweight payments-webhook Docker app + OpenTofu under terraform/environments/staging/.",
+        "dry_run_repo": "dry-run/payments-infra",
         "tf_dir": "terraform/environments/staging",
         "tfvars_name": "terraform.tfvars",
         "service_name": "payments-webhook",
         "worker_count": 1,
         "max_rps": 120,
         "env_tier": "staging",
+        "default_prompt": (
+            "Burst webhook traffic is dropping at 120 RPS. Scale worker_count to 3 and raise "
+            "max_rps=300 in OpenTofu, apply to Docker, and verify container /health probes."
+        ),
+        "issue_title": "Scale payments-webhook workers to 3 replicas and raise MAX_RPS to 300",
+        "issue_body": (
+            "Burst traffic is dropping webhooks at 120 RPS on a single worker. "
+            "Update terraform/environments/staging/terraform.tfvars to run worker_count=3 and max_rps=300 "
+            "in staging, apply to Docker, verify /health on every container, and open a PR."
+        ),
     },
-    "dry-run/billing-stack": {
+    "billing-stack": {
+        "sample_id": "billing-stack",
+        "label": "Billing Stack (Canary Worker)",
+        "description": "Lightweight billing-worker Docker app + OpenTofu under deploy/tf/prod.tfvars.",
+        "dry_run_repo": "dry-run/billing-stack",
         "tf_dir": "deploy/tf",
         "tfvars_name": "prod.tfvars",
         "service_name": "billing-worker",
         "worker_count": 1,
         "max_rps": 150,
         "env_tier": "canary",
+        "default_prompt": (
+            "Scale billing-worker containers to 2 replicas with canary max_rps=150 and verify live health."
+        ),
+        "issue_title": "Scale billing-worker replicas to 2 in deploy/tf/prod.tfvars",
+        "issue_body": (
+            "Canary billing traffic is saturating a single replica. Update deploy/tf/prod.tfvars "
+            "to worker_count=2 with max_rps=150 and env_tier=\"canary\", apply to Docker, and open a PR."
+        ),
     },
 }
+
+DRY_RUN_TF_LAYOUTS: dict[str, dict[str, Any]] = {
+    spec["dry_run_repo"]: spec for spec in SAMPLE_SPECS.values()
+}
+
+
+def load_sample_files(sample_id: str) -> dict[str, str]:
+    """Read all source and OpenTofu files from samples/<sample_id>/ on disk."""
+    sample_root = SAMPLES_DIR / sample_id
+    if not sample_root.is_dir():
+        return {}
+    files: dict[str, str] = {}
+    for path in sorted(sample_root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(sample_root).as_posix()
+        if ".terraform/" in rel or rel.endswith(".tfstate") or ".tfstate." in rel or "__pycache__/" in rel:
+            continue
+        files[rel] = path.read_text(encoding="utf-8")
+    return files
 
 
 def resolve_github_token(settings: Settings | None = None) -> str:
@@ -160,10 +207,99 @@ class GitHubSandboxAdapter:
                 },
             )
 
+    async def publish_sample_repo(
+        self, sample_id: str, full_name: str = ""
+    ) -> dict[str, Any]:
+        """Create or sync a real public GitHub repo from samples/<sample_id>/ with a starter issue."""
+        if sample_id not in SAMPLE_SPECS:
+            raise ValueError(f"Unknown sample repo '{sample_id}'")
+        if not self._token:
+            raise RuntimeError(
+                "No GitHub token available (`GITHUB_TOKEN` or `gh auth login`)"
+            )
+
+        spec = SAMPLE_SPECS[sample_id]
+        sample_files = load_sample_files(sample_id)
+        if not sample_files:
+            raise RuntimeError(f"Sample directory samples/{sample_id} has no files")
+
+        async with httpx.AsyncClient(
+            base_url=GITHUB_API, headers=self._headers(), timeout=15.0
+        ) as client:
+            if not full_name:
+                user_resp = await client.get("/user")
+                user_resp.raise_for_status()
+                owner = user_resp.json()["login"]
+                full_name = f"{owner}/{sample_id}"
+
+            _, repo_name = full_name.split("/", 1)
+            repo_resp = await client.get(f"/repos/{full_name}")
+            created = False
+            if repo_resp.status_code == 404:
+                create_resp = await client.post(
+                    "/user/repos",
+                    json={
+                        "name": repo_name,
+                        "description": spec["description"],
+                        "private": False,
+                        "auto_init": True,
+                    },
+                )
+                create_resp.raise_for_status()
+                created = True
+
+            synced = 0
+            for rel_path, content in sample_files.items():
+                existing_resp = await client.get(f"/repos/{full_name}/contents/{rel_path}")
+                payload: dict[str, Any] = {
+                    "message": f"chore: sync {rel_path} from sample {sample_id}",
+                    "content": base64.b64encode(content.encode()).decode(),
+                }
+                if existing_resp.status_code == 200:
+                    existing_data = existing_resp.json()
+                    sha = existing_data.get("sha")
+                    existing_b64 = str(existing_data.get("content", "")).replace("\n", "")
+                    if existing_b64 == payload["content"]:
+                        continue
+                    if sha:
+                        payload["sha"] = sha
+                put_resp = await client.put(
+                    f"/repos/{full_name}/contents/{rel_path}",
+                    json=payload,
+                )
+                put_resp.raise_for_status()
+                synced += 1
+
+            issues_resp = await client.get(
+                f"/repos/{full_name}/issues",
+                params={"state": "open", "per_page": 5},
+            )
+            if issues_resp.status_code == 200 and not issues_resp.json():
+                await client.post(
+                    f"/repos/{full_name}/issues",
+                    json={
+                        "title": spec["issue_title"],
+                        "body": spec["issue_body"],
+                        "labels": ["bug"],
+                    },
+                )
+
+            return {
+                "sample_id": sample_id,
+                "repo": full_name,
+                "html_url": f"https://github.com/{full_name}",
+                "created": created,
+                "files_synced": synced,
+                "total_files": len(sample_files),
+            }
+
     def _dry_run_file_map(self, repo: str) -> dict[str, str]:
         """Return realistic simulated repository files for dry-run repositories."""
         if repo in DRY_RUN_TF_LAYOUTS:
             spec = DRY_RUN_TF_LAYOUTS[repo]
+            disk_files = load_sample_files(str(spec.get("sample_id", "")))
+            if disk_files:
+                return disk_files
             tf_dir = str(spec["tf_dir"]).strip("/")
             tfvars_name = str(spec["tfvars_name"])
             files: dict[str, str] = {

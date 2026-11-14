@@ -1,0 +1,8 @@
+# Payments Infra (Sample Demo Repo)
+
+Lightweight webhook worker service (`payments-webhook`) with OpenTofu Docker provisioning under `terraform/environments/staging/`.
+
+## Structure
+- `app/server.py` — Lightweight Python HTTP service exposing `/health` and `/ingest` with per-worker RPS limiting and v1/v2 env contract support.
+- `app/Dockerfile` — Container image definition (`python:3.14-slim`).
+- `terraform/environments/staging/` — OpenTofu configuration (`main.tf`, `variables.tf`, `outputs.tf`, `terraform.tfvars`) that provisions `docker_container.worker` replicas.

@@ -121,19 +121,21 @@ async def test_standalone_pages_and_navigation() -> None:
                 # 2. Infrastructure page (GET /infra)
                 r_infra = await ac.get("/infra")
                 assert r_infra.status_code == 200
-                assert "Target Infrastructure Control" in r_infra.text
+                assert "Target Infrastructure &amp; Fault Simulator" in r_infra.text
                 assert "live-run-strip" in r_infra.text
-                assert "Downstream Fault Injection Mode" in r_infra.text
-                assert "Silent 202" in r_infra.text
-                assert "Drift v2" in r_infra.text
+                assert "fault-mode-grid" in r_infra.text
+                assert "Silent 202 Drop" in r_infra.text
+                assert "Contract Drift v2" in r_infra.text
                 assert "Approval Gate" in r_infra.text
                 assert "Before Step 3" in r_infra.text
-                assert "Before Step 4" in r_infra.text
+                assert "Step 3 Health Check" in r_infra.text
+                assert "Simulate Deploy (v1)" in r_infra.text
+                assert "Run Health Probe" in r_infra.text
                 assert "Reset Target to Normal" in r_infra.text
                 assert "deployments-table" in r_infra.text
                 assert "Active" in r_infra.text
                 assert "Status" in r_infra.text
-                assert "Target OpenAPI &amp; Contract Drift Inspector" in r_infra.text
+                assert "OpenAPI v1 → v2 Contract Drift" in r_infra.text
                 assert "callback_uri" in r_infra.text
                 assert "max_rps" in r_infra.text
                 assert "env_tier" in r_infra.text
@@ -147,7 +149,9 @@ async def test_standalone_pages_and_navigation() -> None:
                 assert "MongoDB Atlas Store" in r_store.text
                 assert "badge-mongo" in r_store.text
                 assert "Atlas Cluster0 · MongoDB 9.0.7" in r_store.text
-                assert "MongoDB Atlas Data Explorer Filters" in r_store.text
+                assert "Filter by Run:" in r_store.text
+                assert 'id="run-impact-strip"' in r_store.text
+                assert "Atlas Data Explorer Query Snippets" in r_store.text
                 assert 'id="filter-run-query"' in r_store.text
                 assert 'id="filter-cp-query"' in r_store.text
                 assert 'id="filter-ev-query"' in r_store.text
@@ -428,10 +432,27 @@ async def test_infra_page_api_and_interactions() -> None:
                 assert "POST /v1/deployments" in html
                 assert "deployed dep-act-1 (active)" in html
 
-                # 3. Test Chaos Toggle and Reset
+                # 3. Test Chaos Toggle, Direct Simulation, Probe, and Reset
                 r_chaos = await ac.post("/chaos/drift_v2")
                 assert r_chaos.status_code == 200
                 assert target_state.chaos_mode == ChaosMode.DRIFT_V2
+
+                r_sim_v1 = await ac.post(
+                    "/api/target-simulate-deploy", json={"version": "v1"}
+                )
+                assert r_sim_v1.status_code == 200
+                assert r_sim_v1.json()["status_code"] == 422
+
+                r_sim_v2 = await ac.post(
+                    "/api/target-simulate-deploy", json={"version": "v2"}
+                )
+                assert r_sim_v2.status_code == 200
+                assert r_sim_v2.json()["status_code"] in (200, 201)
+
+                r_probe = await ac.post("/api/target-probe")
+                assert r_probe.status_code == 200
+                assert r_probe.json()["health_status"] == 200
+                assert r_probe.json()["verify"] is not None
 
                 r_reset = await ac.post("/target/reset")
                 assert r_reset.status_code == 200

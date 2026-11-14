@@ -1164,6 +1164,103 @@ async def get_target_openapi(request: Request) -> JSONResponse:
     return JSONResponse(data)
 
 
+@app.post("/api/target-simulate-deploy")
+async def simulate_target_deploy(request: Request) -> JSONResponse:
+    """Send a simulated deployment request to the target microservice to test the active chaos mode."""
+    import secrets
+
+    _, _, http, _ = _deps(request)
+    body: dict[str, Any] = {}
+    try:
+        raw = await request.json()
+        if isinstance(raw, dict):
+            body = raw
+    except (ValueError, TypeError):
+        body = {}
+
+    version = str(body.get("version", "v1")).lower()
+    idem_key = str(body.get("idempotency_key") or f"sim-{secrets.token_hex(4)}")
+
+    if version == "v2":
+        endpoint = "/v2/deployments"
+        payload: dict[str, Any] = {
+            "service_name": "payments-webhook",
+            "branch": "sim/chaos-probe",
+            "commit_sha": "sim0002",
+            "callback_uri": "https://hooks.finishline.dev/payments",
+            "max_rps": 250,
+            "env_tier": "staging",
+            "idempotency_key": idem_key,
+        }
+    else:
+        endpoint = "/v1/deployments"
+        payload = {
+            "service_name": "payments-webhook",
+            "branch": "sim/chaos-probe",
+            "commit_sha": "sim0001",
+            "webhook_url": "https://hooks.finishline.dev/payments",
+            "rate_limit": 250,
+            "idempotency_key": idem_key,
+        }
+
+    try:
+        resp = await http.post(endpoint, json=payload)
+        try:
+            resp_body: Any = resp.json()
+        except ValueError:
+            resp_body = {"raw": resp.text}
+        target_state = await _fetch_target_state(http)
+        return JSONResponse(
+            {
+                "endpoint": endpoint,
+                "status_code": resp.status_code,
+                "response": resp_body,
+                "idempotency_key": idem_key,
+                "target": target_state,
+            }
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Target service unreachable for simulated deploy: {exc}",
+        ) from exc
+
+
+@app.post("/api/target-probe")
+async def probe_target_service(request: Request) -> JSONResponse:
+    """Run GET /health and verify the latest deployment on the target microservice."""
+    _, _, http, _ = _deps(request)
+    try:
+        health_resp = await http.get("/health")
+        health_data = health_resp.json() if health_resp.content else {}
+        target_state = await _fetch_target_state(http)
+        deployments = target_state.get("deployments") or []
+        verify_result: dict[str, Any] | None = None
+        if deployments:
+            latest_id = deployments[-1].get("deployment_id") or deployments[-1].get("id")
+            if latest_id:
+                v_resp = await http.get(f"/verify/{latest_id}")
+                verify_result = {
+                    "deployment_id": latest_id,
+                    "status_code": v_resp.status_code,
+                    "response": v_resp.json() if v_resp.content else {},
+                }
+        target_state = await _fetch_target_state(http)
+        return JSONResponse(
+            {
+                "health_status": health_resp.status_code,
+                "health": health_data,
+                "verify": verify_result,
+                "target": target_state,
+            }
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Target service unreachable for probe: {exc}",
+        ) from exc
+
+
 @app.get("/api/repos")
 async def list_repos(request: Request) -> JSONResponse:
     """List curated demo/sandbox repositories from MongoDB Atlas `demo_repos`."""

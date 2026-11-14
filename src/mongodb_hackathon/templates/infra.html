@@ -1,232 +1,266 @@
 {% extends "base.html" %}
 
-{% block title %}Infrastructure Control — FinishLine{% endblock %}
+{% block title %}Infrastructure Simulator — FinishLine{% endblock %}
 
 {% block content %}
+{% set active_mode = target.get('chaos_mode', 'normal') %}
+{% set is_drifted = target.get('api_version') == 'v2' or active_mode == 'drift_v2' %}
+{% set active_dep_count = target.deployments | selectattr('active') | list | length if target.deployments else 0 %}
+
 <div class="page-header">
   <div>
-    <h1 class="page-title">Target Infrastructure Control</h1>
-    <div class="page-subtitle">Inspect deployment target microservice (:8001), inject mid-flight chaos faults, and observe live probe verifications.</div>
+    <h1 class="page-title">Target Infrastructure &amp; Fault Simulator</h1>
+    <div class="page-subtitle">Configure fault modes on the deployment target (<code>:8001</code>) and simulate deployments or health probes directly.</div>
   </div>
-  <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-    <button class="btn btn-ghost btn-sm" onclick="refreshTargetState()">↻ Refresh State</button>
-    <button class="btn btn-sm" onclick="resetTarget()">Reset Target to Normal</button>
+  <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+    <button type="button" class="btn btn-ghost btn-sm" onclick="refreshTargetState()">Refresh State</button>
+    <button type="button" class="btn btn-sm" onclick="resetTarget()">Reset Target to Normal</button>
   </div>
 </div>
 
-<div class="grid-2col">
-  <section class="surface">
-    <div class="section-head">
-      <div>
-        <h2>Chaos Engineering Controls</h2>
-        <div class="section-head-desc">Toggle downstream failure modes on the target microservice to test autonomous recovery and verification.</div>
-      </div>
+<!-- Live Target State Summary Strip -->
+<section class="target-status-strip" aria-label="Target Infrastructure State">
+  <div class="status-kv">
+    <span class="status-kv-label">Target Service</span>
+    <span class="status-kv-value">
       <span id="target-online-badge" class="badge {% if target.online %}badge-ok{% else %}badge-warn{% endif %}">
         {{ 'Online (:8001)' if target.online else 'Offline / Mock' }}
       </span>
-    </div>
+    </span>
+  </div>
+  <div class="status-kv">
+    <span class="status-kv-label">Active Fault Mode</span>
+    <span class="status-kv-value">
+      <span id="active-mode-badge" class="badge {% if active_mode == 'normal' %}badge-ok{% elif active_mode == 'drift_v2' %}badge-danger{% elif active_mode == 'silent_drop_202' %}badge-warn{% else %}badge-info{% endif %}">
+        {{ active_mode }}
+      </span>
+    </span>
+  </div>
+  <div class="status-kv">
+    <span class="status-kv-label">API Contract</span>
+    <span class="status-kv-value">
+      <span id="openapi-version-badge" class="badge {% if is_drifted %}badge-warn{% else %}badge-info{% endif %}">
+        {{ 'v2 (Drifted)' if is_drifted else 'v1 (Standard)' }}
+      </span>
+    </span>
+  </div>
+  <div class="status-kv">
+    <span class="status-kv-label">Target Deployments</span>
+    <span class="status-kv-value" id="dep-summary-value">
+      {{ active_dep_count }} active / {{ target.deployments|length }} total
+    </span>
+  </div>
+</section>
 
-    <div style="display: flex; flex-direction: column; gap: 16px;">
-      <!-- Mid-flight Chaos Mode Segmented Control -->
-      <div style="display: flex; flex-direction: column; gap: 12px; padding: 14px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: var(--radius-sm);">
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
-          <div>
-            <div style="font-weight: 600; font-size: 13.5px;">Downstream Fault Injection Mode</div>
-            <div style="font-size: 12px; color: var(--muted);">Select how target microservice responds to configuration deploys and probes.</div>
-          </div>
-          <div class="segmented" role="group" aria-label="Target Chaos Mode">
-            {% set labels = {
-              'normal': 'Normal',
-              'silent_drop_202': 'Silent 202',
-              'drift_v2': 'Drift v2',
-              'require_approval_gate': 'Approval Gate'
-            } %}
-            {% for mode in chaos_modes %}
-              <button
-                class="{% if target.get('chaos_mode') == mode %}active{% endif %}"
-                data-mode="{{ mode }}"
-                onclick="setChaosMode('{{ mode }}')"
-              >{{ labels.get(mode, mode) }}</button>
-            {% endfor %}
-          </div>
-        </div>
-
-        <!-- Inline Demo Hints -->
-        <div class="demo-hint-box">
-          <div style="font-weight: 600; font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px;">
-            <span>💡 Live Run Fault Timing &amp; Recovery Expectations</span>
-          </div>
-          <div class="demo-hint-grid">
-            <div class="demo-hint-item">
-              <div class="demo-hint-header">
-                <span class="demo-hint-title">Silent 202 Drop</span>
-                <span class="badge badge-warn" style="font-size: 10px;">Before Step 3</span>
-              </div>
-              <div class="demo-hint-desc">Target returns <code>202 Accepted</code> but leaves <code>active=false</code>. Worker detects false confirmation during probe and retries until verified.</div>
-            </div>
-            <div class="demo-hint-item">
-              <div class="demo-hint-header">
-                <span class="demo-hint-title">Contract Drift v2</span>
-                <span class="badge badge-danger" style="font-size: 10px;">Before Step 3</span>
-              </div>
-              <div class="demo-hint-desc">Target rejects v1 with <code>422 API_CONTRACT_DRIFT</code>. Worker recalls Atlas drift playbook, adapts fields (<code>callback_uri</code>, <code>max_rps</code>, <code>env_tier</code>), and redeploys.</div>
-            </div>
-            <div class="demo-hint-item">
-              <div class="demo-hint-header">
-                <span class="demo-hint-title">Approval Gate</span>
-                <span class="badge badge-info" style="font-size: 10px;">Before Step 4</span>
-              </div>
-              <div class="demo-hint-desc">Target flags deployment as requiring human sign-off. Worker pauses before opening PR until voice or text approval is granted.</div>
-            </div>
-            <div class="demo-hint-item">
-              <div class="demo-hint-header">
-                <span class="demo-hint-title">Normal</span>
-                <span class="badge badge-ok" style="font-size: 10px;">Anytime</span>
-              </div>
-              <div class="demo-hint-desc">Clean happy-path deployment and verification on <code>/v1/deployments</code> with immediate <code>active=true</code>.</div>
-            </div>
-          </div>
+<div class="grid-2col">
+  <section class="surface" style="display: flex; flex-direction: column; gap: 18px;">
+    <div>
+      <div class="section-head">
+        <div>
+          <h2>1. Select Target Fault Mode</h2>
+          <div class="section-head-desc">Click a mode below to switch how <code>:8001</code> responds to deployments and probes.</div>
         </div>
       </div>
 
-      <!-- Deployments Table with explicit active=true/false status -->
-      <div>
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
-          <div style="font-weight: 600; font-size: 13.5px;">Registered Deployments on Target (<span id="dep-count">{{ target.deployments|length }}</span>)</div>
-          <span class="badge badge-neutral" style="font-size: 11px;">Tracked by Target Service Memory</span>
+      {% set mode_specs = [
+        {
+          'key': 'normal',
+          'title': 'Normal',
+          'timing': 'Anytime',
+          'badge_cls': 'badge-ok',
+          'desc': 'Clean happy-path deploy on /v1/deployments with immediate active=true.'
+        },
+        {
+          'key': 'silent_drop_202',
+          'title': 'Silent 202 Drop',
+          'timing': 'Before Step 3',
+          'badge_cls': 'badge-warn',
+          'desc': 'Returns 202 Accepted but leaves active=false. Probe detects false confirmation and retries.'
+        },
+        {
+          'key': 'drift_v2',
+          'title': 'Contract Drift v2',
+          'timing': 'Before Step 3',
+          'badge_cls': 'badge-danger',
+          'desc': 'Rejects v1 with 422 API_CONTRACT_DRIFT. Worker adapts to /v2/deployments (callback_uri, max_rps, env_tier).'
+        },
+        {
+          'key': 'require_approval_gate',
+          'title': 'Approval Gate',
+          'timing': 'Step 3 Health Check',
+          'badge_cls': 'badge-info',
+          'desc': 'Flags deployment as requiring human sign-off during Step 3 before proceeding.'
+        }
+      ] %}
+
+      <div class="fault-mode-grid" role="radiogroup" aria-label="Target Fault Mode">
+        {% for m in mode_specs %}
+          {% set is_selected = (active_mode == m.key) %}
+          <button
+            type="button"
+            role="radio"
+            aria-checked="{{ 'true' if is_selected else 'false' }}"
+            class="fault-mode-card {% if is_selected %}active{% endif %}"
+            data-mode="{{ m.key }}"
+            onclick="setChaosMode('{{ m.key }}')"
+          >
+            <span class="fault-mode-top">
+              <span class="fault-mode-title-wrap">
+                <span class="radio-dot" aria-hidden="true"></span>
+                <span>{{ m.title }}</span>
+              </span>
+              <span class="badge {{ m.badge_cls }}" style="font-size: 11px;">{{ m.timing }}</span>
+            </span>
+            <span class="fault-mode-desc">{{ m.desc }}</span>
+          </button>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Simulate & Verify Controls -->
+    <div>
+      <div class="section-head" style="margin-bottom: 10px;">
+        <div>
+          <h2>2. Simulate &amp; Verify Target Behavior</h2>
+          <div class="section-head-desc">Send a live test deploy or health probe to observe the selected fault mode immediately.</div>
         </div>
+      </div>
+
+      <div class="sim-action-bar">
+        <div class="sim-buttons">
+          <button type="button" class="btn btn-primary btn-sm" id="btn-sim-v1" onclick="simulateDeploy('v1')">Simulate Deploy (v1)</button>
+          <button type="button" class="btn btn-sm" id="btn-sim-v2" onclick="simulateDeploy('v2')">Simulate Deploy (v2)</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-sim-probe" onclick="runHealthProbe()">Run Health Probe</button>
+        </div>
+        <span class="mono" style="font-size: 12px; color: var(--muted);" id="sim-hint-text">
+          Hits :8001 directly and updates state below
+        </span>
+      </div>
+
+      <div id="sim-result-banner" class="sim-result-banner hidden" style="margin-top: 10px;" aria-live="polite"></div>
+    </div>
+
+    <!-- Registered Deployments Table -->
+    <div>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+        <h2 style="margin: 0;">Registered Deployments (<span id="dep-count">{{ target.deployments|length }}</span>)</h2>
+        <span class="badge badge-neutral" style="font-size: 11px;">Target Service Memory</span>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table" id="deployments-table">
+          <thead>
+            <tr>
+              <th>Deployment ID</th>
+              <th>Service</th>
+              <th>Env Tier</th>
+              <th>Max RPS</th>
+              <th>Version</th>
+              <th>Active</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="deployments-body">
+            {% if not target.deployments %}
+              <tr>
+                <td colspan="7" style="text-align: center; color: var(--muted); padding: 18px;">
+                  No deployments registered yet. Click <strong>Simulate Deploy (v1)</strong> above or start a run in Workspace.
+                </td>
+              </tr>
+            {% endif %}
+            {% for d in target.deployments %}
+              <tr>
+                <td><code class="mono">{{ d.deployment_id or d.id or '—' }}</code></td>
+                <td><strong>{{ d.service_name or 'target' }}</strong></td>
+                <td><span class="badge badge-neutral">{{ d.env_tier or 'staging' }}</span></td>
+                <td>{{ d.max_rps or d.rate_limit or '—' }}</td>
+                <td><span class="badge badge-info">{{ d.api_version or 'v1' }}</span></td>
+                <td>
+                  {% if d.active %}
+                    <span class="badge badge-ok">true</span>
+                  {% else %}
+                    <span class="badge badge-danger">false</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if d.status == 'active' %}
+                    <span class="badge badge-ok">active</span>
+                  {% elif d.status == 'dropped_unverified' %}
+                    <span class="badge badge-warn">dropped_unverified</span>
+                  {% else %}
+                    <span class="badge badge-neutral">{{ d.status or 'unknown' }}</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Progressive Disclosure: OpenAPI Schema & Drift Diff -->
+    <details class="schema-diff-card" id="openapi-drift-details" {% if is_drifted %}open{% endif %}>
+      <summary class="schema-diff-head" style="cursor: pointer; user-select: none;">
+        <span style="font-weight: 600; font-size: 13px;">OpenAPI v1 → v2 Contract Drift &amp; Raw Schema</span>
+        <span style="font-size: 12px; color: var(--muted);">Expand to inspect field renames &amp; /openapi.json</span>
+      </summary>
+
+      <div style="padding: 12px 14px; display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+          <div style="font-weight: 600; font-size: 12px; color: var(--text-secondary);">
+            Breaking Migration: <code>POST /v1/deployments</code> → <code>POST /v2/deployments</code>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="loadOpenAPISchema()">Reload OpenAPI</button>
+        </div>
+
         <div class="data-table-wrap">
-          <table class="data-table" id="deployments-table">
+          <table class="data-table" style="font-size: 12px;">
             <thead>
               <tr>
-                <th>Deployment ID</th>
-                <th>Service</th>
-                <th>Branch</th>
-                <th>Env Tier</th>
-                <th>Max RPS</th>
-                <th>Version</th>
-                <th>Active</th>
-                <th>Status</th>
+                <th>v1 Field</th>
+                <th>v2 Field</th>
+                <th>Change</th>
+                <th>Detail</th>
               </tr>
             </thead>
-            <tbody id="deployments-body">
-              {% if not target.deployments %}
+            <tbody id="contract-diff-body">
+              {% if openapi_info and openapi_info.contract_diff and openapi_info.contract_diff.changes %}
+                {% for c in openapi_info.contract_diff.changes %}
+                  <tr>
+                    <td><code class="mono">{{ c.v1_field }}</code></td>
+                    <td><code class="mono" style="color: var(--accent); font-weight: 600;">{{ c.v2_field }}</code></td>
+                    <td>
+                      <span class="badge {% if c.kind == 'added' %}badge-warn{% else %}badge-info{% endif %}">{{ c.kind }}</span>
+                    </td>
+                    <td style="color: var(--text-secondary);">{{ c.detail }}</td>
+                  </tr>
+                {% endfor %}
+              {% else %}
                 <tr>
-                  <td colspan="8" style="text-align: center; color: var(--muted); padding: 18px;">No deployments registered on target microservice.</td>
+                  <td><code class="mono">webhook_url</code></td>
+                  <td><code class="mono" style="color: var(--accent); font-weight: 600;">callback_uri</code></td>
+                  <td><span class="badge badge-info">renamed</span></td>
+                  <td style="color: var(--text-secondary);">Renamed webhook delivery target parameter</td>
+                </tr>
+                <tr>
+                  <td><code class="mono">rate_limit</code></td>
+                  <td><code class="mono" style="color: var(--accent); font-weight: 600;">max_rps</code></td>
+                  <td><span class="badge badge-info">renamed</span></td>
+                  <td style="color: var(--text-secondary);">Renamed rate limit parameter to max requests per second</td>
+                </tr>
+                <tr>
+                  <td><code class="mono">—</code></td>
+                  <td><code class="mono" style="color: var(--accent); font-weight: 600;">env_tier</code></td>
+                  <td><span class="badge badge-warn">added</span></td>
+                  <td style="color: var(--text-secondary);">Required deployment environment tier: staging | canary | production</td>
                 </tr>
               {% endif %}
-              {% for d in target.deployments %}
-                <tr>
-                  <td><code class="mono">{{ d.deployment_id or d.id or '—' }}</code></td>
-                  <td><strong>{{ d.service_name or 'target' }}</strong></td>
-                  <td><code class="mono">{{ d.branch or '—' }}</code></td>
-                  <td><span class="badge badge-neutral">{{ d.env_tier or 'staging' }}</span></td>
-                  <td>{{ d.max_rps or d.rate_limit or '—' }}</td>
-                  <td><span class="badge badge-info">{{ d.api_version or 'v1' }}</span></td>
-                  <td>
-                    {% if d.active %}
-                      <span class="badge badge-ok">true</span>
-                    {% else %}
-                      <span class="badge badge-danger">false</span>
-                    {% endif %}
-                  </td>
-                  <td>
-                    {% if d.status == 'active' %}
-                      <span class="badge badge-ok">active</span>
-                    {% elif d.status == 'dropped_unverified' %}
-                      <span class="badge badge-warn">dropped_unverified</span>
-                    {% else %}
-                      <span class="badge badge-neutral">{{ d.status or 'unknown' }}</span>
-                    {% endif %}
-                  </td>
-                </tr>
-              {% endfor %}
             </tbody>
           </table>
         </div>
+
+        <pre class="code-block-preview" id="openapi-preview-raw">{{ openapi_info.openapi | tojson(indent=2) if openapi_info and openapi_info.openapi else '{\n  "info": {"title": "FinishLine Target Deployment Service", "version": "2.0.0"}\n}' }}</pre>
       </div>
-
-      <!-- OpenAPI Contract Schema & Drift Inspector -->
-      <div class="schema-diff-card" id="openapi-inspector-card">
-        <div class="schema-diff-head">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-weight: 600; font-size: 13px;">Target OpenAPI &amp; Contract Drift Inspector</span>
-            <span id="openapi-version-badge" class="badge {% if target.get('api_version') == 'v2' or target.get('chaos_mode') == 'drift_v2' %}badge-warn{% else %}badge-info{% endif %}">
-              Target API: {{ 'v2 (Drifted)' if target.get('api_version') == 'v2' or target.get('chaos_mode') == 'drift_v2' else 'v1 (Standard)' }}
-            </span>
-          </div>
-          <button class="btn btn-ghost btn-sm" onclick="loadOpenAPISchema()">↻ Reload OpenAPI</button>
-        </div>
-
-        <div style="padding: 12px 14px; display: flex; flex-direction: column; gap: 12px;">
-          <!-- Concrete Drift Mapping Table -->
-          <div>
-            <div style="font-weight: 600; font-size: 12px; margin-bottom: 6px; color: var(--text-secondary);">
-              Breaking Schema Migration: <code>POST /v1/deployments</code> → <code>POST /v2/deployments</code>
-            </div>
-            <div class="data-table-wrap">
-              <table class="data-table" style="font-size: 12px;">
-                <thead>
-                  <tr>
-                    <th>v1 Contract Field</th>
-                    <th>v2 Drifted Field</th>
-                    <th>Change Type</th>
-                    <th>Drift Adaptation Detail</th>
-                  </tr>
-                </thead>
-                <tbody id="contract-diff-body">
-                  {% if openapi_info and openapi_info.contract_diff and openapi_info.contract_diff.changes %}
-                    {% for c in openapi_info.contract_diff.changes %}
-                      <tr>
-                        <td><code class="mono">{{ c.v1_field }}</code></td>
-                        <td><code class="mono" style="color: var(--accent); font-weight: 600;">{{ c.v2_field }}</code></td>
-                        <td>
-                          {% if c.kind == 'added' %}
-                            <span class="badge badge-warn">added</span>
-                          {% else %}
-                            <span class="badge badge-info">renamed</span>
-                          {% endif %}
-                        </td>
-                        <td style="color: var(--text-secondary);">{{ c.detail }}</td>
-                      </tr>
-                    {% endfor %}
-                  {% else %}
-                    <tr>
-                      <td><code class="mono">webhook_url</code></td>
-                      <td><code class="mono" style="color: var(--accent); font-weight: 600;">callback_uri</code></td>
-                      <td><span class="badge badge-info">renamed</span></td>
-                      <td style="color: var(--text-secondary);">Renamed webhook delivery target parameter</td>
-                    </tr>
-                    <tr>
-                      <td><code class="mono">rate_limit</code></td>
-                      <td><code class="mono" style="color: var(--accent); font-weight: 600;">max_rps</code></td>
-                      <td><span class="badge badge-info">renamed</span></td>
-                      <td style="color: var(--text-secondary);">Renamed rate limit parameter to max requests per second</td>
-                    </tr>
-                    <tr>
-                      <td><code class="mono">—</code></td>
-                      <td><code class="mono" style="color: var(--accent); font-weight: 600;">env_tier</code></td>
-                      <td><span class="badge badge-warn">added</span></td>
-                      <td style="color: var(--text-secondary);">Required deployment environment tier: staging | canary | production</td>
-                    </tr>
-                  {% endif %}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- Inspectable Live /openapi.json JSON Viewer -->
-          <details style="border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px 12px; background: var(--surface);">
-            <summary style="cursor: pointer; font-weight: 500; font-size: 12px; color: var(--text-secondary); user-select: none;">
-              Inspect Raw Target <code>/openapi.json</code> Schema Definitions
-            </summary>
-            <div style="margin-top: 8px;">
-              <pre class="code-block-preview" id="openapi-preview-raw">{{ openapi_info.openapi | tojson(indent=2) if openapi_info and openapi_info.openapi else '{\n  "info": {"title": "FinishLine Target Deployment Service", "version": "2.0.0"}\n}' }}</pre>
-            </div>
-          </details>
-        </div>
-      </div>
-    </div>
+    </details>
   </section>
 
   <!-- Target Wire Log Feed -->
@@ -234,14 +268,14 @@
     <div class="section-head">
       <div>
         <h2>Target Wire Log</h2>
-        <div class="section-head-desc">Live HTTP requests received by the downstream target microservice.</div>
+        <div class="section-head-desc">Live HTTP requests received by <code>:8001</code>.</div>
       </div>
       <span class="badge badge-neutral" id="req-count">{{ target.recent_requests|length }} logged</span>
     </div>
 
     <div class="feed" id="requests-feed">
       {% if not target.recent_requests %}
-        <div class="empty-state">No requests recorded on target service yet.</div>
+        <div class="empty-state">No requests recorded on target service yet. Click a simulation button or run a workflow.</div>
       {% endif %}
       {% for req in target.recent_requests|reverse %}
         {% set status_num = req.status_code if req.status_code is defined else req.status %}
@@ -264,27 +298,125 @@
 
 {% block scripts %}
 <script>
+  let lastSimIdempotencyKey = null;
+
+  function showSimResult(kind, title, detail) {
+    const el = document.getElementById("sim-result-banner");
+    if (!el) return;
+    el.className = `sim-result-banner is-${kind}`;
+    el.innerHTML = `
+      <div style="font-weight: 600;">${FinishLineLiveRun.escapeHtml(title)}</div>
+      <div class="mono" style="font-size: 12px; color: var(--text-secondary); word-break: break-word;">${FinishLineLiveRun.escapeHtml(detail)}</div>
+    `;
+  }
+
   async function setChaosMode(mode) {
+    const cards = document.querySelectorAll(".fault-mode-card");
+    cards.forEach((c) => { c.disabled = true; });
     try {
-      const resp = await fetch(`/chaos/${mode}`, { method: "POST" });
+      const resp = await fetch(`/chaos/${encodeURIComponent(mode)}`, { method: "POST" });
       if (resp.ok) {
-        document.querySelectorAll(".segmented button").forEach((btn) => {
-          btn.classList.toggle("active", btn.dataset.mode === mode);
-        });
+        lastSimIdempotencyKey = null;
         await refreshTargetState();
+        showSimResult("ok", `Fault mode switched to ${mode}`, "Target :8001 updated. Use Simulate Deploy or Run Health Probe to test.");
+      } else {
+        const errText = await resp.text();
+        showSimResult("danger", `Failed to switch fault mode (${resp.status})`, errText);
       }
     } catch (err) {
-      console.warn("Failed to set chaos mode:", err);
+      showSimResult("danger", "Target unreachable", String(err));
+    } finally {
+      cards.forEach((c) => { c.disabled = false; });
+    }
+  }
+
+  async function simulateDeploy(version) {
+    const btn = document.getElementById(version === "v2" ? "btn-sim-v2" : "btn-sim-v1");
+    if (btn) btn.disabled = true;
+    try {
+      const payload = { version };
+      if (lastSimIdempotencyKey) {
+        payload.idempotency_key = lastSimIdempotencyKey;
+      }
+      const resp = await fetch("/api/target-simulate-deploy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        showSimResult("danger", `Simulation error (${resp.status})`, data.detail || JSON.stringify(data));
+        return;
+      }
+      if (data.status_code === 202) {
+        lastSimIdempotencyKey = data.idempotency_key;
+        showSimResult(
+          "warn",
+          `POST ${data.endpoint} -> 202 Accepted (Silent Drop: active=false)`,
+          "Target accepted the request without activating it. Click Simulate Deploy (v1) again to test idempotent retry, or Run Health Probe."
+        );
+      } else if (data.status_code === 422) {
+        showSimResult(
+          "danger",
+          `POST ${data.endpoint} -> 422 API_CONTRACT_DRIFT`,
+          (data.response && data.response.detail) || JSON.stringify(data.response)
+        );
+      } else if (data.status_code >= 200 && data.status_code < 300) {
+        lastSimIdempotencyKey = null;
+        showSimResult(
+          "ok",
+          `POST ${data.endpoint} -> ${data.status_code} OK`,
+          JSON.stringify(data.response)
+        );
+      } else {
+        showSimResult("warn", `POST ${data.endpoint} -> ${data.status_code}`, JSON.stringify(data.response));
+      }
+      if (data.target) {
+        renderTargetState(data.target);
+      }
+    } catch (err) {
+      showSimResult("danger", "Simulation failed", String(err));
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function runHealthProbe() {
+    const btn = document.getElementById("btn-sim-probe");
+    if (btn) btn.disabled = true;
+    try {
+      const resp = await fetch("/api/target-probe", { method: "POST" });
+      const data = await resp.json();
+      if (!resp.ok) {
+        showSimResult("danger", `Probe failed (${resp.status})`, data.detail || JSON.stringify(data));
+        return;
+      }
+      const verifyPart = data.verify
+        ? ` | GET /verify/${data.verify.deployment_id} -> ${data.verify.status_code} ${JSON.stringify(data.verify.response)}`
+        : " | No deployment to verify yet";
+      showSimResult(
+        "ok",
+        `GET /health -> ${data.health_status} (mode=${data.health && data.health.chaos_mode})`,
+        JSON.stringify(data.health) + verifyPart
+      );
+      if (data.target) {
+        renderTargetState(data.target);
+      }
+    } catch (err) {
+      showSimResult("danger", "Probe failed", String(err));
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 
   async function resetTarget() {
     try {
       await fetch("/target/reset", { method: "POST" });
-      await setChaosMode("normal");
+      lastSimIdempotencyKey = null;
       await refreshTargetState();
+      showSimResult("ok", "Target reset to normal", "Cleared simulated deployments and wire log.");
     } catch (err) {
-      console.warn("Failed to reset target:", err);
+      showSimResult("danger", "Failed to reset target", String(err));
     }
   }
 
@@ -325,32 +457,51 @@
     }
 
     const currentMode = data.chaos_mode || "normal";
-    document.querySelectorAll(".segmented button").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.mode === currentMode);
+    document.querySelectorAll(".fault-mode-card").forEach((btn) => {
+      const selected = btn.dataset.mode === currentMode;
+      btn.classList.toggle("active", selected);
+      btn.setAttribute("aria-checked", selected ? "true" : "false");
     });
+
+    const modeBadge = document.getElementById("active-mode-badge");
+    if (modeBadge) {
+      modeBadge.textContent = currentMode;
+      const cls = currentMode === "normal"
+        ? "badge-ok"
+        : (currentMode === "drift_v2" ? "badge-danger" : (currentMode === "silent_drop_202" ? "badge-warn" : "badge-info"));
+      modeBadge.className = "badge " + cls;
+    }
 
     const isDrifted = currentMode === "drift_v2" || data.api_version === "v2";
     const verBadge = document.getElementById("openapi-version-badge");
     if (verBadge) {
-      verBadge.textContent = isDrifted ? "Target API: v2 (Drifted)" : "Target API: v1 (Standard)";
+      verBadge.textContent = isDrifted ? "v2 (Drifted)" : "v1 (Standard)";
       verBadge.className = "badge " + (isDrifted ? "badge-warn" : "badge-info");
     }
 
+    const driftDetails = document.getElementById("openapi-drift-details");
+    if (driftDetails && isDrifted) {
+      driftDetails.open = true;
+    }
+
     const deps = data.deployments || [];
+    const activeDeps = deps.filter((d) => Boolean(d.active)).length;
     const depCount = document.getElementById("dep-count");
     if (depCount) depCount.textContent = String(deps.length);
+    const depSummary = document.getElementById("dep-summary-value");
+    if (depSummary) depSummary.textContent = `${activeDeps} active / ${deps.length} total`;
 
     const tbody = document.getElementById("deployments-body");
     if (tbody) {
       if (deps.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--muted); padding: 18px;">No deployments registered on target microservice.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--muted); padding: 18px;">No deployments registered yet. Click <strong>Simulate Deploy (v1)</strong> above or start a run in Workspace.</td></tr>';
       } else {
         tbody.innerHTML = deps.map((d) => {
           const isActive = Boolean(d.active);
           const activeBadge = isActive
             ? '<span class="badge badge-ok">true</span>'
             : '<span class="badge badge-danger">false</span>';
-          
+
           let statusBadge = `<span class="badge badge-neutral">${FinishLineLiveRun.escapeHtml(d.status || "unknown")}</span>`;
           if (d.status === "active") {
             statusBadge = '<span class="badge badge-ok">active</span>';
@@ -362,7 +513,6 @@
             <tr>
               <td><code class="mono">${FinishLineLiveRun.escapeHtml(d.deployment_id || d.id || "—")}</code></td>
               <td><strong>${FinishLineLiveRun.escapeHtml(d.service_name || "target")}</strong></td>
-              <td><code class="mono">${FinishLineLiveRun.escapeHtml(d.branch || "—")}</code></td>
               <td><span class="badge badge-neutral">${FinishLineLiveRun.escapeHtml(d.env_tier || "staging")}</span></td>
               <td>${FinishLineLiveRun.escapeHtml(d.max_rps || d.rate_limit || "—")}</td>
               <td><span class="badge badge-info">${FinishLineLiveRun.escapeHtml(d.api_version || "v1")}</span></td>
@@ -381,7 +531,7 @@
     const feed = document.getElementById("requests-feed");
     if (feed) {
       if (reqs.length === 0) {
-        feed.innerHTML = '<div class="empty-state">No requests recorded on target service yet.</div>';
+        feed.innerHTML = '<div class="empty-state">No requests recorded on target service yet. Click a simulation button or run a workflow.</div>';
       } else {
         feed.innerHTML = [...reqs].reverse().slice(0, 30).map((r) => {
           const statusNum = r.status_code !== undefined ? r.status_code : (r.status !== undefined ? r.status : 200);
@@ -402,7 +552,6 @@
     }
   }
 
-  // Listen for live snapshot events from SSE
   document.addEventListener("finishline:snapshot", function (ev) {
     if (ev.detail && ev.detail.target) {
       renderTargetState(ev.detail.target);

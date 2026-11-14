@@ -3,306 +3,458 @@
 {% block title %}MongoDB Atlas Store — FinishLine{% endblock %}
 
 {% block content %}
+{% set current_run = initial_snapshot.run if initial_snapshot and initial_snapshot.run else none %}
+{% set cps = initial_snapshot.checkpoints if initial_snapshot and initial_snapshot.checkpoints else [] %}
+{% set evs = initial_snapshot.events if initial_snapshot and initial_snapshot.events else [] %}
+
 <div class="page-header">
   <div>
-    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;">
+    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px;">
       <h1 class="page-title">MongoDB Atlas Store</h1>
       <span class="badge badge-mongo">Atlas Cluster0 · MongoDB 9.0.7</span>
       <span class="badge badge-mongo">Database: {{ mongodb_db_name | default('finishline') }}</span>
     </div>
-    <div class="page-subtitle">Durable execution state, database-level <code>$jsonSchema</code> validated checkpoints, Vector Search memories, and Change Streams.</div>
-    
-    <!-- Atlas Collections Identity Badges -->
-    <div class="atlas-identity-bar">
-      <span style="font-size: 12px; font-weight: 500; color: var(--muted);">Atlas Collections:</span>
-      <span class="badge badge-mongo">job_runs</span>
-      <span class="badge badge-mongo">step_checkpoints</span>
-      <span class="badge badge-mongo">service_events</span>
-      <span class="badge badge-mongo">experience_memories</span>
-      <span class="badge badge-mongo">demo_repos</span>
-    </div>
+    <div class="page-subtitle">Inspect live MongoDB collections and see how a specific run is mutating checkpoints, events, and memories.</div>
   </div>
-  <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-    <button class="btn btn-ghost btn-sm" onclick="refreshStoreData()">↻ Refresh Store</button>
+  <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+    <button type="button" class="btn btn-ghost btn-sm" onclick="refreshStoreData()">Refresh Store</button>
   </div>
 </div>
 
-<!-- MongoDB Atlas Data Explorer Filters Card -->
-<section class="surface" style="margin-bottom: 20px;">
-  <div class="section-head">
-    <div>
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <h2 style="font-size: 14.5px;">MongoDB Atlas Data Explorer Filters</h2>
-        <span class="badge badge-mongo">Copy &amp; Paste Query Snippets</span>
-      </div>
-      <div class="section-head-desc">Pre-formatted JSON filter queries tailored to the current run and repository for pasting directly into the Atlas Data Explorer UI.</div>
-    </div>
+<!-- Global Run Filter Bar -->
+<section class="run-filter-bar" aria-label="Global Run Filter">
+  <div class="run-filter-controls">
+    <label for="run-selector" style="font-size: 13px; font-weight: 600; color: var(--text);">Filter by Run:</label>
+    <select id="run-selector" class="run-filter-select" onchange="onRunSelectChange(this.value)">
+      <option value="">All Runs (Database Overview)</option>
+      {% for r in runs %}
+        <option value="{{ r.run_id }}" {% if r.run_id == initial_run_id %}selected{% endif %}>
+          {{ r.run_id }} ({{ r.status }} · {{ r.repo }})
+        </option>
+      {% endfor %}
+    </select>
+    <span id="run-filter-badge" class="badge {% if initial_run_id %}badge-info{% else %}badge-neutral{% endif %}">
+      {% if initial_run_id %}Scoped to {{ initial_run_id }}{% else %}Showing Database Overview{% endif %}
+    </span>
+    <button type="button" id="btn-clear-run-filter" class="btn btn-ghost btn-sm {% if not initial_run_id %}hidden{% endif %}" onclick="onRunSelectChange('')">
+      Clear Filter
+    </button>
   </div>
-
-  <div class="demo-hint-grid" style="grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));">
-    <div class="query-filter-card">
-      <div class="query-filter-header">
-        <span class="mono" style="font-weight: 600; color: var(--mongo);">job_runs</span>
-        <button class="copy-btn" onclick="copySnippet(this, 'filter-run-query')">Copy Query</button>
-      </div>
-      <div class="query-filter-code" id="filter-run-query">{"run_id": "{{ initial_run_id | default('') }}"}</div>
-    </div>
-
-    <div class="query-filter-card">
-      <div class="query-filter-header">
-        <span class="mono" style="font-weight: 600; color: var(--mongo);">step_checkpoints</span>
-        <button class="copy-btn" onclick="copySnippet(this, 'filter-cp-query')">Copy Query</button>
-      </div>
-      <div class="query-filter-code" id="filter-cp-query">{"run_id": "{{ initial_run_id | default('') }}"}</div>
-    </div>
-
-    <div class="query-filter-card">
-      <div class="query-filter-header">
-        <span class="mono" style="font-weight: 600; color: var(--mongo);">service_events</span>
-        <button class="copy-btn" onclick="copySnippet(this, 'filter-ev-query')">Copy Query</button>
-      </div>
-      <div class="query-filter-code" id="filter-ev-query">{"run_id": "{{ initial_run_id | default('') }}"}</div>
-    </div>
-
-    <div class="query-filter-card">
-      <div class="query-filter-header">
-        <span class="mono" style="font-weight: 600; color: var(--mongo);">experience_memories</span>
-        <button class="copy-btn" onclick="copySnippet(this, 'filter-mem-query')">Copy Query</button>
-      </div>
-      <div class="query-filter-code" id="filter-mem-query">{"source_repo": "{{ selected_repo or (initial_snapshot.run.repo if initial_snapshot and initial_snapshot.run else '*') }}", "status": "active"}</div>
-    </div>
+  <div style="font-size: 12px; color: var(--muted);">
+    Collections: <code class="mono">job_runs</code> · <code class="mono">step_checkpoints</code> · <code class="mono">service_events</code> · <code class="mono">experience_memories</code>
   </div>
 </section>
 
-<!-- Active Run & $jsonSchema Checkpoints Inspector -->
-<section class="surface" style="margin-bottom: 20px;">
-  <div class="section-head">
-    <div>
-      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-        <h2>Durable Run Checkpoints &amp; Atomic Validation</h2>
-        <span class="badge badge-mongo">$jsonSchema validated</span>
-      </div>
-      <div class="section-head-desc">MongoDB collection validator guarantees atomic checkpoint writes with strict enum status and sequential integrity.</div>
-    </div>
-    
-    <!-- Inspected Run Selector -->
-    <div style="display: flex; align-items: center; gap: 8px;">
-      <label for="run-selector" style="font-size: 12px; color: var(--muted); font-weight: 500;">Inspecting Run:</label>
-      <select id="run-selector" onchange="onRunSelectChange(this.value)" style="font-family: var(--font-mono); font-size: 12px; padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface);">
-        {% if not runs %}
-          <option value="">No runs in store</option>
-        {% endif %}
-        {% for r in runs %}
-          <option value="{{ r.run_id }}" {% if r.run_id == initial_run_id %}selected{% endif %}>
-            {{ r.run_id }} ({{ r.status }} · {{ r.repo }})
-          </option>
-        {% endfor %}
-      </select>
-    </div>
+<!-- Live Run Impact Summary Strip -->
+<section class="run-impact-strip" id="run-impact-strip" aria-label="Run Impact on MongoDB Store">
+  <div class="status-kv">
+    <span class="status-kv-label">job_runs</span>
+    <span class="status-kv-value" id="impact-run-status">
+      {% if current_run %}
+        <span class="badge {{ 'badge-ok' if current_run.status == 'completed' else ('badge-warn' if current_run.status == 'awaiting_approval' else ('badge-danger' if current_run.status in ['crashed', 'failed', 'rolled_back'] else 'badge-info')) }}">{{ current_run.status }}</span>
+        <span>Step {{ current_run.current_step }}/5</span>
+      {% else %}
+        <span>{{ runs|length }} total runs stored</span>
+      {% endif %}
+    </span>
+    <span class="mono" style="font-size: 12px; color: var(--muted);" id="impact-run-meta">
+      {% if current_run %}
+        {{ current_run.repo }} · PID {{ current_run.worker_pid or 'stopped' }}
+      {% else %}
+        Select a run to inspect live writes
+      {% endif %}
+    </span>
   </div>
 
-  <div class="data-table-wrap">
-    <table class="data-table" id="checkpoints-table">
-      <thead>
-        <tr>
-          <th>Step / Key</th>
-          <th>Validation</th>
-          <th>Status</th>
-          <th>Idempotency Key</th>
-          <th>Attempts</th>
-          <th>Took Effect</th>
-          <th>Post-State &amp; Verification Details</th>
-        </tr>
-      </thead>
-      <tbody id="checkpoints-body">
-        {% set cps = initial_snapshot.checkpoints if initial_snapshot and initial_snapshot.checkpoints else [] %}
-        {% if not cps %}
-          <tr>
-            <td colspan="7" style="text-align: center; color: var(--muted); padding: 18px;">
-              No checkpoints recorded yet for this run. Checkpoints appear as steps execute.
-            </td>
-          </tr>
-        {% endif %}
-        {% for cp in cps %}
-          <tr>
-            <td>
-              <strong>Step {{ cp.step_seq }}</strong>
-              <div class="mono" style="font-size: 11px; color: var(--muted);">{{ cp.step_key }}</div>
-            </td>
-            <td>
-              <span class="badge badge-mongo" style="font-size: 10px;">$jsonSchema ✓</span>
-            </td>
-            <td>
-              {% if cp.status == 'verified_took_effect' %}
-                <span class="badge badge-ok">verified</span>
-              {% elif cp.status == 'sent_unverified' %}
-                <span class="badge badge-warn">unverified</span>
-              {% elif cp.status in ['failed', 'crashed'] %}
-                <span class="badge badge-danger">{{ cp.status }}</span>
-              {% else %}
-                <span class="badge badge-info">{{ cp.status }}</span>
-              {% endif %}
-            </td>
-            <td><code class="mono" style="font-size: 11px;">{{ cp.idempotency_key or '—' }}</code></td>
-            <td>{{ cp.attempts }}</td>
-            <td>
-              {% if cp.took_effect %}
-                <span class="badge badge-ok">true</span>
-              {% else %}
-                <span class="badge badge-neutral">false</span>
-              {% endif %}
-            </td>
-            <td>
-              <details style="font-size: 11.5px;">
-                <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">View State JSON</summary>
-                <div style="margin-top: 6px;">
-                  <pre class="code-block-preview" style="max-height: 140px;">{{ cp.post_state | tojson(indent=2) }}</pre>
-                  {% if cp.probe_result %}
-                    <div style="font-weight: 600; font-size: 11px; margin-top: 4px; color: var(--text-secondary);">Probe Result:</div>
-                    <pre class="code-block-preview" style="max-height: 100px;">{{ cp.probe_result | tojson(indent=2) }}</pre>
-                  {% endif %}
-                </div>
-              </details>
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div class="status-kv">
+    <span class="status-kv-label">step_checkpoints ($jsonSchema)</span>
+    <span class="status-kv-value" id="impact-cp-count">
+      {% if current_run %}
+        {{ cps|length }} checkpoints written
+      {% else %}
+        —
+      {% endif %}
+    </span>
+    <span class="mono" style="font-size: 12px; color: var(--muted);" id="impact-cp-latest">
+      {% if cps %}
+        Latest: Step {{ cps[-1].step_seq }} ({{ cps[-1].status }})
+      {% elif current_run %}
+        No checkpoints yet
+      {% else %}
+        Scoped per run_id
+      {% endif %}
+    </span>
+  </div>
+
+  <div class="status-kv">
+    <span class="status-kv-label">service_events (Change Stream)</span>
+    <span class="status-kv-value" id="impact-ev-count">
+      {% if current_run %}
+        {{ evs|length }} events emitted
+      {% else %}
+        —
+      {% endif %}
+    </span>
+    <span class="mono" style="font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" id="impact-ev-latest">
+      {% if evs %}
+        Latest: {{ evs[-1].step_key }} · {{ evs[-1].event_type }}
+      {% elif current_run %}
+        No events yet
+      {% else %}
+        Scoped per run_id
+      {% endif %}
+    </span>
+  </div>
+
+  <div class="status-kv">
+    <span class="status-kv-label">experience_memories ($vectorSearch)</span>
+    <span class="status-kv-value" id="impact-mem-count">{{ memories|length }} rules loaded</span>
+    <span class="mono" style="font-size: 12px; color: var(--muted);" id="impact-mem-scope">
+      Scope: {{ selected_repo or (current_run.repo if current_run else 'All repositories') }}
+    </span>
   </div>
 </section>
 
-<div class="grid-2col">
-  <!-- Experience Memories (Vector Search, Track 2) Section -->
-  <section class="surface">
-    <div class="section-head">
-      <div>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <h2>Experience Memories &amp; Scoped Rules</h2>
-          <span class="badge badge-mongo">Atlas Vector Search ($vectorSearch)</span>
-        </div>
-        <div class="section-head-desc">Track 2 memory governance: rules scoped by <code>source_repo</code> and global <code>*</code> drift playbooks.</div>
-      </div>
-      <span class="badge badge-neutral" id="memory-count">{{ memories|length }} total</span>
-    </div>
-
-    <!-- Repo Filter Bar & Add Rule Toggle -->
-    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;">
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <label for="memory-repo-filter" style="font-size: 12px; font-weight: 500; color: var(--muted);">Filter Scope:</label>
-        <select id="memory-repo-filter" onchange="filterMemoriesByRepo(this.value)" style="font-size: 12px; padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface);">
-          <option value="">All Repositories &amp; Playbooks</option>
-          <option value="*" {% if selected_repo == '*' %}selected{% endif %}>* (Global Drift Playbooks)</option>
-          {% for r in repos %}
-            <option value="{{ r.repo }}" {% if selected_repo == r.repo %}selected{% endif %}>{{ r.label or r.repo }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <button class="btn btn-sm btn-ghost" onclick="toggleAddMemoryForm()">+ Add Repo Rule</button>
-    </div>
-
-    <!-- Inline + Add Repo Rule Form (Track 2 Direct UI Creation) -->
-    <div id="add-memory-form-card" style="display: none; padding: 14px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 14px;">
-      <div style="font-weight: 600; font-size: 13px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
-        <span>Create New Scoped Repo Rule or Playbook</span>
-        <button class="btn btn-ghost btn-sm" onclick="toggleAddMemoryForm()" style="padding: 2px 6px;">✕</button>
-      </div>
-      <form id="add-memory-form" onsubmit="submitNewMemory(event)">
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px;">
-          <div>
-            <label style="font-size: 11.5px; font-weight: 500; color: var(--text-secondary); display: block; margin-bottom: 3px;">Kind</label>
-            <select name="kind" id="new-mem-kind" style="width: 100%; font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);">
-              <option value="repo_rule">repo_rule (Scoped Repository Constraint)</option>
-              <option value="drift_playbook">drift_playbook (Schema Drift Migration)</option>
-              <option value="github_fix">github_fix (GitHub Resolution Pattern)</option>
-            </select>
-          </div>
-          <div>
-            <label style="font-size: 11.5px; font-weight: 500; color: var(--text-secondary); display: block; margin-bottom: 3px;">Scope (source_repo)</label>
-            <input type="text" name="source_repo" id="new-mem-repo" value="{{ selected_repo or '*' }}" placeholder="e.g. dry-run/payments-webhook or *" style="width: 100%; font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);" required />
-          </div>
-        </div>
-
-        <div style="margin-bottom: 8px;">
-          <label style="font-size: 11.5px; font-weight: 500; color: var(--text-secondary); display: block; margin-bottom: 3px;">Title / Summary</label>
-          <input type="text" name="title" id="new-mem-title" placeholder="e.g. Cap staging rate limit <= 300 and verify callback URI" style="width: 100%; font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);" required />
-        </div>
-
-        <div style="margin-bottom: 8px;">
-          <label style="font-size: 11.5px; font-weight: 500; color: var(--text-secondary); display: block; margin-bottom: 3px;">Rule Requirement (Content)</label>
-          <textarea name="content" id="new-mem-content" rows="2" placeholder="Policy details or conditions governing agent actions..." style="width: 100%; font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); resize: vertical;" required></textarea>
-        </div>
-
-        <div style="margin-bottom: 12px;">
-          <label style="font-size: 11.5px; font-weight: 500; color: var(--text-secondary); display: block; margin-bottom: 3px;">Fix Action / Remediation (Resolution)</label>
-          <textarea name="fix_action" id="new-mem-fix" rows="2" placeholder="Exact config patch or remediation action..." style="width: 100%; font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); resize: vertical;"></textarea>
-        </div>
-
-        <div style="display: flex; justify-content: flex-end; gap: 8px;">
-          <button type="button" class="btn btn-ghost btn-sm" onclick="toggleAddMemoryForm()">Cancel</button>
-          <button type="submit" class="btn btn-sm btn-ok" id="btn-save-memory">Save Rule to Atlas</button>
-        </div>
-      </form>
-    </div>
-
-    <!-- Memories Table -->
-    <div class="data-table-wrap">
-      <table class="data-table" id="memories-table">
-        <thead>
-          <tr>
-            <th>Kind</th>
-            <th>Scope (source_repo)</th>
-            <th>Title &amp; Rule</th>
-            <th>Status</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody id="memories-body">
-          {% if not memories %}
-            <tr>
-              <td colspan="5" style="text-align: center; color: var(--muted); padding: 18px;">No memories matching this scope in Atlas.</td>
-            </tr>
-          {% endif %}
-          {% for m in memories %}
-            <tr id="mem-row-{{ m.memory_id }}">
-              <td><span class="badge badge-info">{{ m.kind }}</span></td>
-              <td><code class="repo-chip">{{ m.source_repo or '*' }}</code></td>
-              <td>
-                <div style="font-weight: 600; font-size: 13px;">{{ m.title }}</div>
-                <div style="font-size: 12px; color: var(--text-secondary); margin-top: 3px;">{{ m.content }}</div>
-                {% if m.resolution and m.resolution != m.content %}
-                  <div style="font-size: 11.5px; color: var(--muted); margin-top: 3px;">
-                    <span style="font-weight: 500;">Action:</span> {{ m.resolution }}
-                  </div>
-                {% endif %}
-              </td>
-              <td>
-                <span class="badge {% if m.status == 'active' %}badge-ok{% else %}badge-neutral{% endif %}" id="mem-status-{{ m.memory_id }}">
-                  {{ m.status }}
-                </span>
-              </td>
-              <td>
-                {% if m.status == 'active' %}
-                  <button class="btn btn-sm btn-danger" onclick="toggleMemory('{{ m.memory_id }}', false)">Invalidate</button>
-                {% else %}
-                  <button class="btn btn-sm btn-ok" onclick="toggleMemory('{{ m.memory_id }}', true)">Restore</button>
-                {% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-
-    <!-- Curated Demo Repositories Table -->
-    <div style="margin-top: 24px;">
+<div class="grid-2col" style="margin-bottom: 20px;">
+  <!-- Left Column: Checkpoints & Experience Memories -->
+  <div style="display: flex; flex-direction: column; gap: 20px; min-width: 0;">
+    <section class="surface">
       <div class="section-head">
         <div>
-          <h2>Curated Demo Repositories</h2>
-          <div class="section-head-desc">Atlas <code>demo_repos</code> registry with quick filters and workspace links.</div>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <h2>step_checkpoints</h2>
+            <span class="badge badge-mongo">$jsonSchema validated</span>
+          </div>
+          <div class="section-head-desc">Atomic step checkpoints recorded for the selected run.</div>
         </div>
-        <span class="badge badge-neutral">{{ repos|length }} registered</span>
+        <span class="badge badge-neutral" id="cp-count-badge">{{ cps|length }} rows</span>
       </div>
 
+      <div class="data-table-wrap">
+        <table class="data-table" id="checkpoints-table">
+          <thead>
+            <tr>
+              <th>Step</th>
+              <th>Status</th>
+              <th>Idempotency Key</th>
+              <th>Attempts</th>
+              <th>Took Effect</th>
+              <th>State JSON</th>
+            </tr>
+          </thead>
+          <tbody id="checkpoints-body">
+            {% if not initial_run_id %}
+              <tr>
+                <td colspan="6" style="text-align: center; color: var(--muted); padding: 18px;">
+                  Select a run in <strong>Filter by Run</strong> above (or click a run on the right) to inspect its checkpoints.
+                </td>
+              </tr>
+            {% elif not cps %}
+              <tr>
+                <td colspan="6" style="text-align: center; color: var(--muted); padding: 18px;">
+                  No checkpoints recorded yet for <code>{{ initial_run_id }}</code>.
+                </td>
+              </tr>
+            {% endif %}
+            {% for cp in cps %}
+              <tr>
+                <td>
+                  <strong>Step {{ cp.step_seq }}</strong>
+                  <div class="mono" style="font-size: 11px; color: var(--muted);">{{ cp.step_key }}</div>
+                </td>
+                <td>
+                  {% if cp.status == 'verified_took_effect' %}
+                    <span class="badge badge-ok">verified</span>
+                  {% elif cp.status == 'sent_unverified' %}
+                    <span class="badge badge-warn">unverified</span>
+                  {% elif cp.status in ['failed', 'crashed'] %}
+                    <span class="badge badge-danger">{{ cp.status }}</span>
+                  {% else %}
+                    <span class="badge badge-info">{{ cp.status }}</span>
+                  {% endif %}
+                </td>
+                <td><code class="mono" style="font-size: 11px;">{{ cp.idempotency_key or '—' }}</code></td>
+                <td>{{ cp.attempts }}</td>
+                <td>
+                  {% if cp.took_effect %}
+                    <span class="badge badge-ok">true</span>
+                  {% else %}
+                    <span class="badge badge-neutral">false</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <details style="font-size: 12px;">
+                    <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">View JSON</summary>
+                    <div style="margin-top: 6px;">
+                      <pre class="code-block-preview" style="max-height: 140px;">{{ cp.post_state | tojson(indent=2) }}</pre>
+                      {% if cp.probe_result %}
+                        <div style="font-weight: 600; font-size: 11px; margin-top: 4px; color: var(--text-secondary);">Probe Result:</div>
+                        <pre class="code-block-preview" style="max-height: 100px;">{{ cp.probe_result | tojson(indent=2) }}</pre>
+                      {% endif %}
+                    </div>
+                  </details>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Experience Memories (Vector Search, Track 2) Section -->
+    <section class="surface">
+      <div class="section-head">
+        <div>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <h2>experience_memories</h2>
+            <span class="badge badge-mongo">$vectorSearch</span>
+          </div>
+          <div class="section-head-desc">Scoped repository rules and global <code>*</code> drift playbooks stored in Atlas.</div>
+        </div>
+        <span class="badge badge-neutral" id="memory-count">{{ memories|length }} total</span>
+      </div>
+
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <label for="memory-repo-filter" style="font-size: 12px; font-weight: 500; color: var(--muted);">Filter Scope:</label>
+          <select id="memory-repo-filter" onchange="filterMemoriesByRepo(this.value)" style="font-size: 12px; padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface);">
+            <option value="">All Repositories &amp; Playbooks</option>
+            <option value="*" {% if selected_repo == '*' %}selected{% endif %}>* (Global Drift Playbooks)</option>
+            {% for r in repos %}
+              <option value="{{ r.repo }}" {% if selected_repo == r.repo %}selected{% endif %}>{{ r.label or r.repo }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="button" class="btn btn-sm btn-ghost" onclick="toggleAddMemoryForm()">+ Add Repo Rule</button>
+      </div>
+
+      <!-- Inline + Add Repo Rule Form -->
+      <div id="add-memory-form-card" style="display: none; padding: 14px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 14px;">
+        <div style="font-weight: 600; font-size: 13px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+          <span>Create New Scoped Repo Rule or Playbook</span>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="toggleAddMemoryForm()" style="padding: 2px 6px;">✕</button>
+        </div>
+        <form id="add-memory-form" onsubmit="submitNewMemory(event)">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px;">
+            <div>
+              <label style="font-size: 12px; font-weight: 500; color: var(--text-secondary); display: block; margin-bottom: 3px;">Kind</label>
+              <select name="kind" id="new-mem-kind" style="width: 100%; font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);">
+                <option value="repo_rule">repo_rule (Scoped Repository Constraint)</option>
+                <option value="drift_playbook">drift_playbook (Schema Drift Migration)</option>
+                <option value="github_fix">github_fix (GitHub Resolution Pattern)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size: 12px; font-weight: 500; color: var(--text-secondary); display: block; margin-bottom: 3px;">Scope (source_repo)</label>
+              <input type="text" name="source_repo" id="new-mem-repo" value="{{ selected_repo or '*' }}" placeholder="e.g. dry-run/payments-webhook or *" style="width: 100%; font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);" required />
+            </div>
+          </div>
+
+          <div style="margin-bottom: 8px;">
+            <label style="font-size: 12px; font-weight: 500; color: var(--text-secondary); display: block; margin-bottom: 3px;">Title / Summary</label>
+            <input type="text" name="title" id="new-mem-title" placeholder="e.g. Cap staging rate limit <= 300 and verify callback URI" style="width: 100%; font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);" required />
+          </div>
+
+          <div style="margin-bottom: 8px;">
+            <label style="font-size: 12px; font-weight: 500; color: var(--text-secondary); display: block; margin-bottom: 3px;">Rule Requirement (Content)</label>
+            <textarea name="content" id="new-mem-content" rows="2" placeholder="Policy details or conditions governing agent actions..." style="width: 100%; font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); resize: vertical;" required></textarea>
+          </div>
+
+          <div style="margin-bottom: 12px;">
+            <label style="font-size: 12px; font-weight: 500; color: var(--text-secondary); display: block; margin-bottom: 3px;">Fix Action / Remediation (Resolution)</label>
+            <textarea name="fix_action" id="new-mem-fix" rows="2" placeholder="Exact config patch or remediation action..." style="width: 100%; font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); resize: vertical;"></textarea>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; gap: 8px;">
+            <button type="button" class="btn btn-ghost btn-sm" onclick="toggleAddMemoryForm()">Cancel</button>
+            <button type="submit" class="btn btn-sm btn-ok" id="btn-save-memory">Save Rule to Atlas</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="data-table-wrap">
+        <table class="data-table" id="memories-table">
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th>Scope</th>
+              <th>Title &amp; Rule</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="memories-body">
+            {% if not memories %}
+              <tr>
+                <td colspan="5" style="text-align: center; color: var(--muted); padding: 18px;">No memories matching this scope in Atlas.</td>
+              </tr>
+            {% endif %}
+            {% for m in memories %}
+              <tr id="mem-row-{{ m.memory_id }}">
+                <td><span class="badge badge-info">{{ m.kind }}</span></td>
+                <td><code class="repo-chip">{{ m.source_repo or '*' }}</code></td>
+                <td>
+                  <div style="font-weight: 600; font-size: 13px;">{{ m.title }}</div>
+                  <div style="font-size: 12px; color: var(--text-secondary); margin-top: 3px;">{{ m.content }}</div>
+                  {% if m.resolution and m.resolution != m.content %}
+                    <div style="font-size: 12px; color: var(--muted); margin-top: 3px;">
+                      <span style="font-weight: 500;">Action:</span> {{ m.resolution }}
+                    </div>
+                  {% endif %}
+                </td>
+                <td>
+                  <span class="badge {% if m.status == 'active' %}badge-ok{% else %}badge-neutral{% endif %}" id="mem-status-{{ m.memory_id }}">
+                    {{ m.status }}
+                  </span>
+                </td>
+                <td>
+                  {% if m.status == 'active' %}
+                    <button type="button" class="btn btn-sm btn-danger" onclick="toggleMemory('{{ m.memory_id }}', false)">Invalidate</button>
+                  {% else %}
+                    <button type="button" class="btn btn-sm btn-ok" onclick="toggleMemory('{{ m.memory_id }}', true)">Restore</button>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Right Column: Live Change Stream Events & Job Runs Selector -->
+  <aside class="surface" style="display: flex; flex-direction: column; gap: 22px;">
+    <div>
+      <div class="section-head">
+        <div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <h2>service_events</h2>
+            <span class="badge badge-mongo">Change Streams</span>
+          </div>
+          <div class="section-head-desc">Live event stream emitted for the filtered run.</div>
+        </div>
+        <span class="badge badge-neutral" id="events-count">{{ evs|length }} events</span>
+      </div>
+
+      <div class="feed" id="store-events-feed" style="max-height: 360px; overflow-y: auto;">
+        {% if not initial_run_id %}
+          <div class="empty-state">Select a run to tail its <code>service_events</code> Change Stream.</div>
+        {% elif not evs %}
+          <div class="empty-state">No service events recorded for this run yet.</div>
+        {% endif %}
+        {% for ev in evs|reverse %}
+          <div class="feed-row">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+              <span class="feed-type">{{ ev.step_key }} · {{ ev.event_type }}</span>
+              <span class="badge badge-info" style="font-size: 11px;">ChangeStream</span>
+            </div>
+            <div style="font-size: 12.5px; margin-top: 2px;">{{ ev.message }}</div>
+            <div class="feed-msg mono">
+              {{ ev.created_at or '' }}
+              {% if ev.details %}
+                · {{ ev.details | tojson }}
+              {% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div>
+      <div class="section-head">
+        <div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <h2>job_runs</h2>
+            <span class="badge badge-neutral" id="runs-count">{{ runs|length }} runs</span>
+          </div>
+          <div class="section-head-desc">Click any run to filter the store view to that run.</div>
+        </div>
+      </div>
+
+      <div class="feed" id="runs-feed" style="max-height: 340px; overflow-y: auto;">
+        {% if not runs %}
+          <div class="empty-state">No job runs recorded in Atlas yet.</div>
+        {% endif %}
+        {% for r in runs %}
+          <div
+            class="feed-row {% if r.run_id == initial_run_id %}is-selected{% endif %}"
+            data-run-id="{{ r.run_id }}"
+            style="padding: 10px 0; cursor: pointer;"
+            onclick="onRunSelectChange('{{ r.run_id }}')"
+          >
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+              <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
+                <code class="mono" style="font-weight: 600;">{{ r.run_id }}</code>
+                <code class="repo-chip" style="font-size: 11px;">{{ r.repo }}</code>
+              </div>
+              <span class="badge {{ 'badge-ok' if r.status == 'completed' else ('badge-warn' if r.status == 'awaiting_approval' else ('badge-danger' if r.status in ['crashed', 'failed', 'rolled_back'] else 'badge-info')) }}">{{ r.status }}</span>
+            </div>
+            <div style="font-size: 12.5px; margin-top: 4px; color: var(--text-secondary);">
+              #{{ r.issue_number }} · {{ r.issue_title }}
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 12px; color: var(--muted);">
+              <span>Step {{ r.current_step }}/5 · PID: {{ r.worker_pid or 'stopped' }}</span>
+              {% if r.pr_url %}
+                <a href="{{ r.pr_url }}" target="_blank" onclick="event.stopPropagation()">View PR ↗</a>
+              {% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- Secondary Developer Tools (Collapsed by default so DB contents lead) -->
+<div style="display: flex; flex-direction: column; gap: 12px;">
+  <details class="schema-diff-card" style="margin-top: 0;">
+    <summary class="schema-diff-head" style="cursor: pointer; user-select: none;">
+      <span style="font-weight: 600; font-size: 13px;">Atlas Data Explorer Query Snippets</span>
+      <span style="font-size: 12px; color: var(--muted);">Copyable JSON filters for the selected run &amp; repo</span>
+    </summary>
+    <div style="padding: 14px;">
+      <div class="demo-hint-grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
+        <div class="query-filter-card">
+          <div class="query-filter-header">
+            <span class="mono" style="font-weight: 600; color: var(--mongo);">job_runs</span>
+            <button type="button" class="copy-btn" onclick="copySnippet(this, 'filter-run-query')">Copy Query</button>
+          </div>
+          <div class="query-filter-code" id="filter-run-query">{"run_id": "{{ initial_run_id | default('') }}"}</div>
+        </div>
+
+        <div class="query-filter-card">
+          <div class="query-filter-header">
+            <span class="mono" style="font-weight: 600; color: var(--mongo);">step_checkpoints</span>
+            <button type="button" class="copy-btn" onclick="copySnippet(this, 'filter-cp-query')">Copy Query</button>
+          </div>
+          <div class="query-filter-code" id="filter-cp-query">{"run_id": "{{ initial_run_id | default('') }}"}</div>
+        </div>
+
+        <div class="query-filter-card">
+          <div class="query-filter-header">
+            <span class="mono" style="font-weight: 600; color: var(--mongo);">service_events</span>
+            <button type="button" class="copy-btn" onclick="copySnippet(this, 'filter-ev-query')">Copy Query</button>
+          </div>
+          <div class="query-filter-code" id="filter-ev-query">{"run_id": "{{ initial_run_id | default('') }}"}</div>
+        </div>
+
+        <div class="query-filter-card">
+          <div class="query-filter-header">
+            <span class="mono" style="font-weight: 600; color: var(--mongo);">experience_memories</span>
+            <button type="button" class="copy-btn" onclick="copySnippet(this, 'filter-mem-query')">Copy Query</button>
+          </div>
+          <div class="query-filter-code" id="filter-mem-query">{"source_repo": "{{ selected_repo or (current_run.repo if current_run else '*') }}", "status": "active"}</div>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <details class="schema-diff-card" style="margin-top: 0;">
+    <summary class="schema-diff-head" style="cursor: pointer; user-select: none;">
+      <span style="font-weight: 600; font-size: 13px;">demo_repos Registry ({{ repos|length }} registered)</span>
+      <span style="font-size: 12px; color: var(--muted);">Expand to filter rules by repo or open in Workspace</span>
+    </summary>
+    <div style="padding: 14px;">
       <div class="data-table-wrap">
         <table class="data-table" id="repos-table">
           <thead>
@@ -323,7 +475,7 @@
               <tr>
                 <td>
                   <strong>{{ r.label or r.repo }}</strong>
-                  <div><code class="mono" style="font-size: 11.5px; color: var(--muted);">{{ r.repo }}</code></div>
+                  <div><code class="mono" style="font-size: 12px; color: var(--muted);">{{ r.repo }}</code></div>
                 </td>
                 <td>
                   {% if r.is_live %}
@@ -335,8 +487,8 @@
                 <td style="color: var(--text-secondary); font-size: 12.5px;">{{ r.description or '—' }}</td>
                 <td>
                   <div style="display: flex; align-items: center; gap: 6px;">
-                    <button class="btn btn-ghost btn-sm" onclick="filterMemoriesByRepo('{{ r.repo }}')" title="Filter rules to this repo">Filter Rules</button>
-                    <a href="/?repo={{ r.repo }}" class="btn btn-ghost btn-sm" title="Open repository in Workspace">Open in Workspace ↗</a>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="filterMemoriesByRepo('{{ r.repo }}')">Filter Rules</button>
+                    <a href="/?repo={{ r.repo }}" class="btn btn-ghost btn-sm">Open in Workspace ↗</a>
                   </div>
                 </td>
               </tr>
@@ -345,90 +497,14 @@
         </table>
       </div>
     </div>
-  </section>
-
-  <!-- Live service_events Change Stream Tail & Job Runs -->
-  <aside class="surface">
-    <!-- Live service_events Change Stream Tail -->
-    <div class="section-head">
-      <div>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <h2>Live Change Stream Tail</h2>
-          <span class="badge badge-mongo">service_events</span>
-        </div>
-        <div class="section-head-desc">Real-time MongoDB Atlas Change Streams tailing the inspected run.</div>
-      </div>
-      <span class="badge badge-neutral" id="events-count">
-        {{ initial_snapshot.events|length if initial_snapshot and initial_snapshot.events else 0 }} events
-      </span>
-    </div>
-
-    <div class="feed" id="store-events-feed" style="max-height: 380px; overflow-y: auto; margin-bottom: 24px;">
-      {% set evs = initial_snapshot.events if initial_snapshot and initial_snapshot.events else [] %}
-      {% if not evs %}
-        <div class="empty-state">No service events recorded for this run yet.</div>
-      {% endif %}
-      {% for ev in evs|reverse %}
-        <div class="feed-row">
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-            <span class="feed-type">{{ ev.step_key }} · {{ ev.event_type }}</span>
-            <span class="badge badge-info" style="font-size: 10px;">ChangeStream</span>
-          </div>
-          <div style="font-size: 12.5px; margin-top: 2px;">{{ ev.message }}</div>
-          <div class="feed-msg mono">
-            {{ ev.created_at or '' }}
-            {% if ev.details %}
-              · {{ ev.details | tojson }}
-            {% endif %}
-          </div>
-        </div>
-      {% endfor %}
-    </div>
-
-    <!-- Job Runs List -->
-    <div class="section-head">
-      <div>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <h2>Job Runs Collection</h2>
-          <span class="badge badge-mongo">job_runs</span>
-        </div>
-        <div class="section-head-desc">Autonomous runs recorded with durable checkpoints.</div>
-      </div>
-      <span class="badge badge-neutral" id="runs-count">{{ runs|length }} runs</span>
-    </div>
-
-    <div class="feed" id="runs-feed" style="max-height: 320px; overflow-y: auto;">
-      {% if not runs %}
-        <div class="empty-state">No job runs recorded in Atlas yet.</div>
-      {% endif %}
-      {% for r in runs %}
-        <div class="feed-row" style="padding: 10px 0; cursor: pointer;" onclick="onRunSelectChange('{{ r.run_id }}')">
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <code class="mono" style="font-weight: 600;">{{ r.run_id }}</code>
-              <code class="repo-chip" style="font-size: 11px;">{{ r.repo }}</code>
-            </div>
-            <span class="badge {{ 'badge-ok' if r.status == 'completed' else ('badge-warn' if r.status == 'awaiting_approval' else ('badge-danger' if r.status in ['crashed', 'failed', 'rolled_back'] else 'badge-info')) }}">{{ r.status }}</span>
-          </div>
-          <div style="font-size: 12.5px; margin-top: 4px; color: var(--text-secondary);">
-            #{{ r.issue_number }} · {{ r.issue_title }}
-          </div>
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 11.5px; color: var(--muted);">
-            <span>Step {{ r.current_step }}/5 · PID: {{ r.worker_pid or 'stopped' }}</span>
-            {% if r.pr_url %}
-              <a href="{{ r.pr_url }}" target="_blank" onclick="event.stopPropagation()">View PR ↗</a>
-            {% endif %}
-          </div>
-        </div>
-      {% endfor %}
-    </div>
-  </aside>
+  </details>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
   let currentlyInspectedRunId = "{{ initial_run_id | default('') }}";
+  const totalRunsCount = {{ runs|length }};
 
   function copySnippet(btn, elementId) {
     const el = document.getElementById(elementId);
@@ -487,20 +563,107 @@
     if (memEl) memEl.textContent = JSON.stringify({ source_repo: memRepo, status: "active" });
   }
 
-  async function onRunSelectChange(runId) {
-    if (!runId) return;
-    currentlyInspectedRunId = runId;
+  function updateRunFilterUI(runId) {
     const selector = document.getElementById("run-selector");
     if (selector && selector.value !== runId) {
       selector.value = runId;
     }
 
-    updateQuerySnippets(runId);
+    const badge = document.getElementById("run-filter-badge");
+    if (badge) {
+      badge.textContent = runId ? `Scoped to ${runId}` : "Showing Database Overview";
+      badge.className = "badge " + (runId ? "badge-info" : "badge-neutral");
+    }
+
+    const clearBtn = document.getElementById("btn-clear-run-filter");
+    if (clearBtn) {
+      clearBtn.classList.toggle("hidden", !runId);
+    }
+
+    document.querySelectorAll("#runs-feed .feed-row[data-run-id]").forEach((row) => {
+      row.classList.toggle("is-selected", Boolean(runId && row.dataset.runId === runId));
+    });
+
+    if (window.history && window.history.replaceState) {
+      const url = new URL(window.location.href);
+      if (runId) {
+        url.searchParams.set("run_id", runId);
+      } else {
+        url.searchParams.delete("run_id");
+      }
+      window.history.replaceState({}, "", url.toString());
+    }
+  }
+
+  function updateRunImpactStrip(snapshot) {
+    const statusEl = document.getElementById("impact-run-status");
+    const metaEl = document.getElementById("impact-run-meta");
+    const cpCountEl = document.getElementById("impact-cp-count");
+    const cpLatestEl = document.getElementById("impact-cp-latest");
+    const evCountEl = document.getElementById("impact-ev-count");
+    const evLatestEl = document.getElementById("impact-ev-latest");
+
+    if (!snapshot || !snapshot.run) {
+      if (statusEl) statusEl.textContent = `${totalRunsCount} total runs stored`;
+      if (metaEl) metaEl.textContent = "Select a run to inspect live writes";
+      if (cpCountEl) cpCountEl.textContent = "—";
+      if (cpLatestEl) cpLatestEl.textContent = "Scoped per run_id";
+      if (evCountEl) evCountEl.textContent = "—";
+      if (evLatestEl) evLatestEl.textContent = "Scoped per run_id";
+      return;
+    }
+
+    const r = snapshot.run;
+    const cps = snapshot.checkpoints || [];
+    const evs = snapshot.events || [];
+
+    const badgeCls = r.status === "completed"
+      ? "badge-ok"
+      : (r.status === "awaiting_approval"
+        ? "badge-warn"
+        : (["crashed", "failed", "rolled_back"].includes(r.status) ? "badge-danger" : "badge-info"));
+
+    if (statusEl) {
+      statusEl.innerHTML = `<span class="badge ${badgeCls}">${FinishLineLiveRun.escapeHtml(r.status)}</span> <span>Step ${FinishLineLiveRun.escapeHtml(r.current_step || 0)}/5</span>`;
+    }
+    if (metaEl) {
+      metaEl.textContent = `${r.repo || ""} · PID ${r.worker_pid || "stopped"}`;
+    }
+    if (cpCountEl) {
+      cpCountEl.textContent = `${cps.length} checkpoints written`;
+    }
+    if (cpLatestEl) {
+      cpLatestEl.textContent = cps.length > 0
+        ? `Latest: Step ${cps[cps.length - 1].step_seq} (${cps[cps.length - 1].status})`
+        : "No checkpoints yet";
+    }
+    if (evCountEl) {
+      evCountEl.textContent = `${evs.length} events emitted`;
+    }
+    if (evLatestEl) {
+      evLatestEl.textContent = evs.length > 0
+        ? `Latest: ${evs[evs.length - 1].step_key} · ${evs[evs.length - 1].event_type}`
+        : "No events yet";
+    }
+  }
+
+  async function onRunSelectChange(runId) {
+    currentlyInspectedRunId = runId || "";
+    updateRunFilterUI(currentlyInspectedRunId);
+    updateQuerySnippets(currentlyInspectedRunId);
+
+    if (!currentlyInspectedRunId) {
+      updateRunImpactStrip(null);
+      renderCheckpoints([]);
+      renderEvents([]);
+      return;
+    }
 
     try {
-      const resp = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
+      const resp = await fetch(`/api/runs/${encodeURIComponent(currentlyInspectedRunId)}`);
       if (!resp.ok) return;
       const data = await resp.json();
+      updateRunImpactStrip(data);
       renderCheckpoints(data.checkpoints || []);
       renderEvents(data.events || []);
     } catch (err) {
@@ -510,10 +673,17 @@
 
   function renderCheckpoints(cps) {
     const tbody = document.getElementById("checkpoints-body");
+    const countBadge = document.getElementById("cp-count-badge");
+    if (countBadge) countBadge.textContent = `${cps ? cps.length : 0} rows`;
     if (!tbody) return;
 
+    if (!currentlyInspectedRunId) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--muted); padding: 18px;">Select a run in <strong>Filter by Run</strong> above (or click a run on the right) to inspect its checkpoints.</td></tr>';
+      return;
+    }
+
     if (!cps || cps.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--muted); padding: 18px;">No checkpoints recorded yet for this run.</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--muted); padding: 18px;">No checkpoints recorded yet for <code>${FinishLineLiveRun.escapeHtml(currentlyInspectedRunId)}</code>.</td></tr>`;
       return;
     }
 
@@ -540,14 +710,13 @@
             <strong>Step ${FinishLineLiveRun.escapeHtml(cp.step_seq || 1)}</strong>
             <div class="mono" style="font-size: 11px; color: var(--muted);">${FinishLineLiveRun.escapeHtml(cp.step_key || "")}</div>
           </td>
-          <td><span class="badge badge-mongo" style="font-size: 10px;">$jsonSchema ✓</span></td>
           <td>${statusBadge}</td>
           <td><code class="mono" style="font-size: 11px;">${FinishLineLiveRun.escapeHtml(cp.idempotency_key || "—")}</code></td>
           <td>${FinishLineLiveRun.escapeHtml(cp.attempts !== undefined ? cp.attempts : cp.attempt_count || 0)}</td>
           <td>${tookEffectBadge}</td>
           <td>
-            <details style="font-size: 11.5px;">
-              <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">View State JSON</summary>
+            <details style="font-size: 12px;">
+              <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">View JSON</summary>
               <div style="margin-top: 6px;">
                 <pre class="code-block-preview" style="max-height: 140px;">${FinishLineLiveRun.escapeHtml(postStateStr)}</pre>
                 ${probeStr ? `<div style="font-weight: 600; font-size: 11px; margin-top: 4px; color: var(--text-secondary);">Probe Result:</div><pre class="code-block-preview" style="max-height: 100px;">${FinishLineLiveRun.escapeHtml(probeStr)}</pre>` : ""}
@@ -565,6 +734,11 @@
     if (countEl) countEl.textContent = `${evs ? evs.length : 0} events`;
     if (!feed) return;
 
+    if (!currentlyInspectedRunId) {
+      feed.innerHTML = '<div class="empty-state">Select a run to tail its <code>service_events</code> Change Stream.</div>';
+      return;
+    }
+
     if (!evs || evs.length === 0) {
       feed.innerHTML = '<div class="empty-state">No service events recorded for this run yet.</div>';
       return;
@@ -576,7 +750,7 @@
         <div class="feed-row">
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
             <span class="feed-type">${FinishLineLiveRun.escapeHtml(ev.step_key || "")} · ${FinishLineLiveRun.escapeHtml(ev.event_type || "")}</span>
-            <span class="badge badge-info" style="font-size: 10px;">ChangeStream</span>
+            <span class="badge badge-info" style="font-size: 11px;">ChangeStream</span>
           </div>
           <div style="font-size: 12.5px; margin-top: 2px;">${FinishLineLiveRun.escapeHtml(ev.message || "")}</div>
           <div class="feed-msg mono">${FinishLineLiveRun.escapeHtml(ev.created_at || "")}${FinishLineLiveRun.escapeHtml(detailsStr)}</div>
@@ -592,6 +766,11 @@
     }
 
     updateQuerySnippets(currentlyInspectedRunId, repo);
+
+    const scopeEl = document.getElementById("impact-mem-scope");
+    if (scopeEl) {
+      scopeEl.textContent = `Scope: ${repo || "All repositories"}`;
+    }
 
     const url = repo
       ? `/api/memories?source_repo=${encodeURIComponent(repo)}&include_global=true&limit=60`
@@ -610,7 +789,10 @@
   function renderMemories(memories) {
     const tbody = document.getElementById("memories-body");
     const countEl = document.getElementById("memory-count");
-    if (countEl) countEl.textContent = `${memories ? memories.length : 0} total`;
+    const impactCountEl = document.getElementById("impact-mem-count");
+    const total = memories ? memories.length : 0;
+    if (countEl) countEl.textContent = `${total} total`;
+    if (impactCountEl) impactCountEl.textContent = `${total} rules loaded`;
     if (!tbody) return;
 
     if (!memories || memories.length === 0) {
@@ -625,11 +807,11 @@
         : `<span class="badge badge-neutral" id="mem-status-${FinishLineLiveRun.escapeHtml(m.memory_id)}">${FinishLineLiveRun.escapeHtml(m.status)}</span>`;
 
       const actionBtn = isActive
-        ? `<button class="btn btn-sm btn-danger" onclick="toggleMemory('${FinishLineLiveRun.escapeHtml(m.memory_id)}', false)">Invalidate</button>`
-        : `<button class="btn btn-sm btn-ok" onclick="toggleMemory('${FinishLineLiveRun.escapeHtml(m.memory_id)}', true)">Restore</button>`;
+        ? `<button type="button" class="btn btn-sm btn-danger" onclick="toggleMemory('${FinishLineLiveRun.escapeHtml(m.memory_id)}', false)">Invalidate</button>`
+        : `<button type="button" class="btn btn-sm btn-ok" onclick="toggleMemory('${FinishLineLiveRun.escapeHtml(m.memory_id)}', true)">Restore</button>`;
 
       const actionLine = m.resolution && m.resolution !== m.content
-        ? `<div style="font-size: 11.5px; color: var(--muted); margin-top: 3px;"><span style="font-weight: 500;">Action:</span> ${FinishLineLiveRun.escapeHtml(m.resolution)}</div>`
+        ? `<div style="font-size: 12px; color: var(--muted); margin-top: 3px;"><span style="font-weight: 500;">Action:</span> ${FinishLineLiveRun.escapeHtml(m.resolution)}</div>`
         : "";
 
       return `
@@ -721,17 +903,13 @@
     await filterMemoriesByRepo(currentRepo);
   }
 
-  // Update when active run changes or emits SSE snapshot
   document.addEventListener("finishline:snapshot", function (ev) {
     if (ev.detail && ev.detail.run) {
       const activeRun = ev.detail.run;
-      // If we are tracking the active run or on page load
       if (!currentlyInspectedRunId || currentlyInspectedRunId === activeRun.run_id) {
         currentlyInspectedRunId = activeRun.run_id;
-        const selector = document.getElementById("run-selector");
-        if (selector && selector.value !== activeRun.run_id) {
-          selector.value = activeRun.run_id;
-        }
+        updateRunFilterUI(activeRun.run_id);
+        updateRunImpactStrip(ev.detail);
         updateQuerySnippets(activeRun.run_id, activeRun.repo);
         if (ev.detail.checkpoints) {
           renderCheckpoints(ev.detail.checkpoints);

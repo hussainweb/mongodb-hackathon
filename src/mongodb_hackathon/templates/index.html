@@ -6,7 +6,7 @@
 <div class="workspace-layout">
   <div class="page-header" style="margin-bottom: 0; padding-bottom: 16px;">
     <div>
-      <h1 class="page-title">Release Closer Workspace</h1>
+      <h1 class="page-title">Deploy Agent Workspace</h1>
       <div class="page-subtitle">Describe a release goal or issue below to run autonomous verification with MongoDB Atlas checkpoints.</div>
     </div>
   </div>
@@ -115,7 +115,7 @@
           <button type="button" data-pacing="step" onclick="setPacing('step')">Step-by-Step</button>
         </div>
       </div>
-      <button id="btn-run-closer" class="btn btn-primary" style="padding: 10px 20px; font-size: 14px; font-weight: 600;" onclick="startRun()">Run Release Closer</button>
+      <button id="btn-run-closer" class="btn btn-primary" style="padding: 10px 20px; font-size: 14px; font-weight: 600;" onclick="startRun()">Run Deploy Agent</button>
     </div>
   </section>
 
@@ -226,7 +226,7 @@
 
     <!-- 5-Step Verification Timeline -->
     <div id="step-list" class="steps">
-      <div class="empty-state">Select or compose a release prompt above and click <strong>Run Release Closer</strong>.</div>
+      <div class="empty-state">Select or compose a release prompt above and click <strong>Run Deploy Agent</strong>.</div>
     </div>
   </section>
 </div>
@@ -887,7 +887,7 @@
     }
     const stepList = document.getElementById("step-list");
     if (stepList) {
-      stepList.innerHTML = '<div class="empty-state">Select or compose a release prompt above and click <strong>Run Release Closer</strong>.</div>';
+      stepList.innerHTML = '<div class="empty-state">Select or compose a release prompt above and click <strong>Run Deploy Agent</strong>.</div>';
     }
     if (window.history && window.history.replaceState) {
       const url = new URL(window.location.href);

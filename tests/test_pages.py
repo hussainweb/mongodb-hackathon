@@ -103,7 +103,7 @@ async def test_standalone_pages_and_navigation() -> None:
                 assert "Step-by-Step" in r_home.text
                 assert "Fast 0.1s" in r_home.text
                 assert "Slow 2.5s" in r_home.text
-                assert "Run Release Closer" in r_home.text
+                assert "Run Deploy Agent" in r_home.text
 
                 # Timeline, Breakpoints & Actions
                 assert 'id="step-list"' in r_home.text

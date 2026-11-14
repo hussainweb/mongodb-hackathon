@@ -3,422 +3,495 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FinishLine — Track 3 Chaos-Resumable Control Room</title>
+  <title>FinishLine — Release Verification &amp; Crash Recovery</title>
   <style>
     :root {
-      --bg: #0b101b;
-      --panel: #121928;
-      --panel-2: #182235;
-      --border: #26344d;
-      --text: #e6edf7;
-      --muted: #93a4bf;
-      --emerald: #10b981;
-      --amber: #f59e0b;
-      --rose: #f43f5e;
-      --cyan: #06b6d4;
-      --indigo: #6366f1;
+      color-scheme: dark;
+      --bg: #0d1117;
+      --surface: #151b23;
+      --surface-subtle: #1b222c;
+      --border: #2a323d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #2f81f7;
+      --ok: #2ea043;
+      --warn: #d29922;
+      --danger: #f85149;
+      --radius: 8px;
     }
+
     * { box-sizing: border-box; }
+
+    ::selection {
+      background: rgba(47, 129, 247, 0.35);
+      color: var(--text);
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
     body {
       margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: radial-gradient(circle at top right, #16213a 0%, var(--bg) 55%);
+      background: var(--bg);
       color: var(--text);
-      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      font-variant-numeric: tabular-nums;
     }
-    a { color: #67e8f9; text-decoration: none; }
+
+    a { color: #58a6ff; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    code, pre {
+    code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      color: var(--text);
     }
+
+    .container {
+      max-width: 1140px;
+      margin: 0 auto;
+      padding: 20px 24px 48px;
+    }
+
+    /* Header */
     .topbar {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
-      padding: 14px 20px;
-      background: rgba(18, 25, 40, 0.92);
-      border-bottom: 1px solid var(--border);
-      position: sticky;
-      top: 0;
-      z-index: 20;
-      backdrop-filter: blur(8px);
-    }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    .brand-badge {
-      padding: 4px 10px;
-      border-radius: 999px;
-      background: rgba(16, 185, 129, 0.16);
-      border: 1px solid rgba(16, 185, 129, 0.45);
-      color: #6ee7b7;
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-    .brand h1 {
-      margin: 0;
-      font-size: 18px;
-      letter-spacing: -0.01em;
-    }
-    .chaos-bar {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 8px;
-    }
-    .btn {
-      border: 1px solid var(--border);
-      background: var(--panel-2);
-      color: var(--text);
-      padding: 8px 12px;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: transform 0.08s ease, border-color 0.15s ease, background 0.15s ease;
-    }
-    .btn:hover { border-color: #4b6593; transform: translateY(-1px); }
-    .btn:active { transform: translateY(0); }
-    .btn-primary { background: #1d4ed8; border-color: #3b82f6; }
-    .btn-emerald { background: #047857; border-color: #10b981; }
-    .btn-danger { background: #be123c; border-color: #f43f5e; }
-    .btn-amber { background: #b45309; border-color: #f59e0b; }
-    .btn-chaos.active {
-      background: rgba(245, 158, 11, 0.22);
-      border-color: var(--amber);
-      color: #fde68a;
-    }
-    .btn-sm { padding: 5px 9px; font-size: 12px; }
-    .grid {
-      display: grid;
-      grid-template-columns: 330px minmax(420px, 1fr) 360px;
       gap: 16px;
-      padding: 16px 20px 28px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .title-group {
+      display: flex;
+      align-items: baseline;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .title-group h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .repo-meta {
+      color: var(--muted);
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    /* Controls */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 34px;
+      padding: 0 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+
+    .btn:hover { background: var(--surface-subtle); border-color: #3d4756; }
+    .btn-primary { background: #1d4ed8; border-color: #2563eb; color: #ffffff; }
+    .btn-primary:hover { background: #1e40af; }
+    .btn-ok { background: #15803d; border-color: #16a34a; color: #ffffff; }
+    .btn-ok:hover { background: #166534; }
+    .btn-danger { background: transparent; border-color: rgba(248, 81, 73, 0.55); color: #ff7b72; }
+    .btn-danger:hover { background: rgba(248, 81, 73, 0.12); }
+    .btn-ghost { background: transparent; border-color: transparent; color: var(--muted); padding: 0 8px; }
+    .btn-ghost:hover { color: var(--text); background: var(--surface); }
+    .btn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
+
+    .segmented {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 2px;
+      gap: 2px;
+    }
+
+    .segmented button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .segmented button:hover { color: var(--text); }
+    .segmented button.active {
+      background: var(--surface-subtle);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px #3d4756;
+    }
+
+    select, input[type="text"] {
+      height: 34px;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0 10px;
+      font-size: 13px;
+    }
+
+    /* Launch Toolbar */
+    .launch-bar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+
+    .launch-bar select {
+      flex: 1;
+      min-width: 260px;
+    }
+
+    /* Two-column Workspace */
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(290px, 1fr);
+      gap: 24px;
+      margin-top: 22px;
       align-items: start;
     }
-    @media (max-width: 1180px) {
-      .grid { grid-template-columns: 1fr; }
+
+    @media (max-width: 900px) {
+      .workspace { grid-template-columns: 1fr; }
     }
-    .panel {
-      background: var(--panel);
+
+    .surface {
+      background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
+      padding: 18px;
     }
-    .panel-title {
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-      font-weight: 700;
+
+    .section-head {
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
     }
-    .card {
-      background: var(--panel-2);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 11px;
+
+    .section-head h2 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
     }
-    .issue-item {
-      cursor: pointer;
-      transition: border-color 0.15s ease;
-    }
-    .issue-item.selected {
-      border-color: var(--cyan);
-      box-shadow: 0 0 0 1px rgba(6, 182, 212, 0.4);
-    }
-    .pill {
+
+    .badge {
       display: inline-flex;
       align-items: center;
       padding: 2px 8px;
       border-radius: 999px;
       font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: capitalize;
     }
-    .pill-verified { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.4); }
-    .pill-only_sent { background: rgba(245, 158, 11, 0.2); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.45); }
-    .pill-crashed, .pill-rolled_back, .pill-failed { background: rgba(244, 63, 94, 0.18); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.45); }
-    .pill-running, .pill-adapting_drift { background: rgba(6, 182, 212, 0.18); color: #67e8f9; border: 1px solid rgba(6, 182, 212, 0.45); }
-    .pill-waiting_approval, .pill-pending { background: rgba(99, 102, 241, 0.2); color: #c7d2fe; border: 1px solid rgba(99, 102, 241, 0.45); }
-    .meta-row {
+
+    .badge-ok { background: rgba(46, 160, 67, 0.16); color: #7ee787; }
+    .badge-warn { background: rgba(210, 153, 34, 0.18); color: #e3b341; }
+    .badge-danger { background: rgba(248, 81, 73, 0.16); color: #ff7b72; }
+    .badge-info { background: rgba(47, 129, 247, 0.16); color: #79c0ff; }
+    .badge-neutral { background: var(--surface-subtle); color: var(--muted); }
+
+    /* Run Action Bar */
+    .run-controls {
       display: flex;
       flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
       gap: 10px;
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      margin-bottom: 14px;
+    }
+
+    .run-meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
       font-size: 12px;
       color: var(--muted);
-      margin-top: 6px;
     }
-    .step-list {
+
+    .action-group {
       display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    /* Voice Approval Banner (only visible when gate is open) */
+    .approval-banner {
+      display: none;
       flex-direction: column;
       gap: 10px;
-    }
-    .step-card {
-      background: var(--panel-2);
-      border: 1px solid var(--border);
-      border-left: 4px solid var(--border);
-      border-radius: 10px;
       padding: 12px;
+      border-radius: var(--radius);
+      border: 1px solid rgba(210, 153, 34, 0.5);
+      background: rgba(210, 153, 34, 0.08);
+      margin-bottom: 14px;
     }
-    .step-card.verified_took_effect { border-left-color: var(--emerald); }
-    .step-card.sent_unverified { border-left-color: var(--amber); }
-    .step-card.drifted, .step-card.adapted { border-left-color: var(--cyan); }
-    .step-card.rolled_back, .step-card.failed, .step-card.blocked_policy { border-left-color: var(--rose); }
-    .event-log {
-      max-height: 360px;
-      overflow-y: auto;
+
+    .approval-banner.visible { display: flex; }
+
+    /* Step List (flat hairline rows, no nested boxes) */
+    .steps {
       display: flex;
       flex-direction: column;
+    }
+
+    .step-row {
+      padding: 12px 2px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .step-row:first-child { border-top: 0; padding-top: 4px; }
+
+    .step-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .step-title { font-weight: 500; font-size: 14px; }
+    .step-detail { color: var(--muted); font-size: 12.5px; }
+
+    /* Live Feed */
+    .feed {
+      display: flex;
+      flex-direction: column;
+      max-height: 380px;
+      overflow-y: auto;
+    }
+
+    .feed-row {
+      padding: 9px 0;
+      border-top: 1px solid var(--border);
+      font-size: 12.5px;
+    }
+
+    .feed-row:first-child { border-top: 0; padding-top: 0; }
+    .feed-type { font-weight: 600; color: var(--text); }
+    .feed-msg { color: var(--muted); margin-top: 2px; }
+
+    /* Progressive Disclosure */
+    details.advanced {
+      margin-top: 16px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }
+
+    details.advanced summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+      user-select: none;
+    }
+
+    details.advanced summary:hover { color: var(--text); }
+
+    .playbook-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
       gap: 8px;
+      padding: 8px 0;
+      border-top: 1px solid var(--border);
       font-size: 12px;
     }
-    .event-item {
-      background: rgba(11, 16, 27, 0.7);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 10px;
-    }
-    input[type="text"], select {
-      width: 100%;
-      background: #0b101b;
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 10px;
-      font-size: 13px;
-    }
-    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .muted { color: var(--muted); font-size: 12px; }
-    .kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-    }
-    .kpi {
-      background: #0b101b;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 10px;
-    }
-    .kpi-label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
-    .kpi-val { font-size: 16px; font-weight: 700; margin-top: 2px; }
+
+    .playbook-row:first-of-type { border-top: 0; margin-top: 8px; }
+    .empty-state { color: var(--muted); font-size: 13px; padding: 18px 0; }
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-badge">Track 3 · Finish the Job</span>
-      <div>
-        <h1>FinishLine Operator &amp; Chaos Control Room</h1>
-        <div class="muted">
-          Repo: <code id="sandbox-repo">{{ sandbox_repo }}</code>
-          · GitHub Token: <strong id="gh-status">{{ 'LIVE' if has_github_token else 'DRY-RUN' }}</strong>
-          · Target <code>:8001</code>: <strong id="target-online">{{ 'ONLINE' if target.get('online', True) else 'OFFLINE' }}</strong>
+  <div class="container">
+    <header class="topbar">
+      <div class="title-group">
+        <h1>FinishLine</h1>
+        <div class="repo-meta">
+          <code id="sandbox-repo">{{ sandbox_repo }}</code>
+          {% if sandbox_repo.startswith('dry-run/') %}
+            <button class="btn btn-sm" onclick="bootstrapSandbox()">Connect GitHub Sandbox</button>
+          {% endif %}
         </div>
       </div>
-    </div>
 
-    <div class="chaos-bar">
-      <span class="muted">Target Chaos:</span>
-      {% for mode in chaos_modes %}
-        <button
-          class="btn btn-sm btn-chaos {% if target.get('chaos_mode') == mode %}active{% endif %}"
-          data-mode="{{ mode }}"
-          onclick="setChaosMode('{{ mode }}')"
-        >
-          {{ mode }}
-        </button>
-      {% endfor %}
-      <button class="btn btn-sm" onclick="bootstrapSandbox()">Bootstrap GitHub Sandbox</button>
-      <button class="btn btn-sm" onclick="resetTarget()">Reset Target</button>
-    </div>
-  </header>
-
-  <main class="grid">
-    <!-- LEFT: Issue Selection, Process Crash/Resume, Voice Approval -->
-    <section style="display: flex; flex-direction: column; gap: 14px;">
-      <div class="panel">
-        <div class="panel-title">
-          <span>1. Launch Release Closer</span>
-          <span class="muted" id="issue-count">{{ issues|length }} issues</span>
-        </div>
-        <div id="issue-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto;">
-          {% for iss in issues %}
-            <div
-              class="card issue-item {% if loop.first %}selected{% endif %}"
-              data-number="{{ iss.number }}"
-              data-title="{{ iss.title }}"
-              data-body="{{ iss.body }}"
-              onclick="selectIssue(this)"
-            >
-              <div style="font-weight: 600; font-size: 13px;">#{{ iss.number }} · {{ iss.title }}</div>
-              <div class="muted" style="margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                {{ iss.body }}
-              </div>
-            </div>
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+        <span style="font-size: 12px; color: var(--muted);">Target Chaos</span>
+        <div class="segmented" role="group" aria-label="Target Chaos Mode">
+          {% set labels = {
+            'normal': 'Normal',
+            'silent_drop_202': 'Silent 202',
+            'drift_v2': 'Drift v2',
+            'require_approval_gate': 'Approval Gate'
+          } %}
+          {% for mode in chaos_modes %}
+            <button
+              class="{% if target.get('chaos_mode') == mode %}active{% endif %}"
+              data-mode="{{ mode }}"
+              onclick="setChaosMode('{{ mode }}')"
+            >{{ labels.get(mode, mode) }}</button>
           {% endfor %}
         </div>
-        <div class="row">
-          <label class="muted" for="step-delay">Step delay (s):</label>
-          <input id="step-delay" type="text" value="0.8" style="width: 72px;" />
-          <button class="btn btn-primary" style="flex: 1;" onclick="startRun()">Launch Worker</button>
-        </div>
+        <button class="btn btn-ghost btn-sm" onclick="resetTarget()">Reset</button>
       </div>
+    </header>
 
-      <div class="panel">
-        <div class="panel-title">
-          <span>2. OS Process &amp; Rollback Theater</span>
-          <span class="muted">Run: <code id="active-run-id">{{ initial_run_id or 'none' }}</code></span>
-        </div>
-        <div class="row">
-          <select id="run-selector" onchange="switchRun(this.value)">
-            {% for r in runs %}
-              <option value="{{ r.run_id }}" {% if r.run_id == initial_run_id %}selected{% endif %}>
-                {{ r.run_id }} · #{{ r.issue_number }} ({{ r.status }})
-              </option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="row">
-          <button class="btn btn-danger" style="flex: 1;" onclick="killWorker()">SIGKILL Worker PID</button>
-          <button class="btn btn-emerald" style="flex: 1;" onclick="resumeWorker()">Resume Fresh PID</button>
-        </div>
-        <button class="btn btn-amber" onclick="triggerRollback()">Halt &amp; Compensating Rollback (Track 1)</button>
-      </div>
-
-      <div class="panel" id="voice-panel">
-        <div class="panel-title">
-          <span>3. Escalation Gate (ElevenLabs TTS + Scribe STT)</span>
-        </div>
-        <div id="audio-container" class="muted">No active voice escalation yet.</div>
-        <audio id="briefing-audio" controls style="width: 100%; display: none;"></audio>
-        <div class="row">
-          <button class="btn btn-sm" id="record-btn" onclick="toggleRecording()">Record Voice Decision</button>
-          <span class="muted" id="record-status">Mic idle</span>
-        </div>
-        <div class="row">
-          <input id="approval-note" type="text" placeholder="Approved after Canary check" />
-          <button class="btn btn-emerald btn-sm" onclick="approveText()">Approve</button>
-        </div>
-      </div>
+    <section class="launch-bar" aria-label="Launch Release Closer">
+      <select id="issue-select" aria-label="GitHub Issue">
+        {% for iss in issues %}
+          <option
+            value="{{ iss.number }}"
+            data-title="{{ iss.title }}"
+            data-body="{{ iss.body }}"
+          >#{{ iss.number }} · {{ iss.title }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-primary" onclick="startRun()">Run Release Closer</button>
+      <select id="run-selector" aria-label="Active Run" style="max-width: 240px;" onchange="switchRun(this.value)">
+        {% if not runs %}
+          <option value="">No runs yet</option>
+        {% endif %}
+        {% for r in runs %}
+          <option value="{{ r.run_id }}" {% if r.run_id == initial_run_id %}selected{% endif %}>
+            {{ r.run_id }} · #{{ r.issue_number }} ({{ r.status }})
+          </option>
+        {% endfor %}
+      </select>
     </section>
 
-    <!-- CENTER: Idempotent Verification Pipeline -->
-    <section class="panel">
-      <div class="panel-title">
-        <span>Verification-Driven 5-Stage Pipeline</span>
-        <span id="run-status-pill" class="pill pill-pending">NO RUN</span>
-      </div>
+    <main class="workspace">
+      <section class="surface">
+        <div class="section-head">
+          <h2>Verification Pipeline</h2>
+          <span id="run-status-badge" class="badge badge-neutral">No Run Selected</span>
+        </div>
 
-      <div class="kpi-grid">
-        <div class="kpi">
-          <div class="kpi-label">Worker OS PID</div>
-          <div class="kpi-val" id="kpi-pid">—</div>
+        <div class="run-controls">
+          <div class="run-meta">
+            <span>PID: <code id="kpi-pid">—</code></span>
+            <span>Deployments: <strong id="kpi-deps">0</strong></span>
+            <span id="run-pr-link"></span>
+          </div>
+          <div class="action-group">
+            <button id="btn-kill" class="btn btn-danger btn-sm hidden" onclick="killWorker()">SIGKILL Worker</button>
+            <button id="btn-resume" class="btn btn-ok btn-sm hidden" onclick="resumeWorker()">Resume Fresh PID</button>
+            <button id="btn-rollback" class="btn btn-sm hidden" onclick="triggerRollback()">Rollback</button>
+          </div>
         </div>
-        <div class="kpi">
-          <div class="kpi-label">Crash Survivals</div>
-          <div class="kpi-val" id="kpi-crashes">0</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-label">Target Deployments</div>
-          <div class="kpi-val" id="kpi-deps">0</div>
-        </div>
-      </div>
 
-      <div id="run-links" class="card muted">
-        Select or launch a run to inspect real-time Atlas checkpoints and independent verification probes.
-      </div>
-
-      <div id="step-list" class="step-list"></div>
-    </section>
-
-    <!-- RIGHT: Atlas Change Streams + Track 2 Experience Memories -->
-    <section style="display: flex; flex-direction: column; gap: 14px;">
-      <div class="panel">
-        <div class="panel-title">
-          <span>Atlas Change Streams (Live Events)</span>
-          <span class="muted" id="sse-badge">SSE idle</span>
+        <div id="approval-banner" class="approval-banner">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <strong style="font-size: 13px;">Human Approval Required</strong>
+            <button class="btn btn-sm" id="record-btn" onclick="toggleRecording()">Speak Decision</button>
+          </div>
+          <div id="audio-container" style="font-size: 12.5px; color: var(--muted);"></div>
+          <audio id="briefing-audio" controls style="width: 100%; display: none;"></audio>
+          <div style="display: flex; gap: 8px;">
+            <input id="approval-note" type="text" placeholder="Approval note (e.g. Canary green)" style="flex: 1;" />
+            <button class="btn btn-ok btn-sm" onclick="approveText()">Approve &amp; Continue</button>
+          </div>
+          <div id="record-status" style="font-size: 12px; color: var(--muted);"></div>
         </div>
-        <div id="event-log" class="event-log">
-          <div class="muted">Waiting for run events...</div>
-        </div>
-      </div>
 
-      <div class="panel">
-        <div class="panel-title">
-          <span>Atlas Vector Search Playbooks (Track 2)</span>
-          <button class="btn btn-sm" onclick="refreshMemories()">Refresh</button>
+        <div id="step-list" class="steps">
+          <div class="empty-state">Select a GitHub issue above and click <strong>Run Release Closer</strong>.</div>
         </div>
-        <div id="memory-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 290px; overflow-y: auto;">
-          {% for m in memories %}
-            <div class="card">
-              <div class="row" style="justify-content: space-between;">
-                <strong style="font-size: 12px;">{{ m.title }}</strong>
-                <span class="pill {% if m.status == 'active' %}pill-verified{% else %}pill-crashed{% endif %}">
-                  {{ m.status }}
-                </span>
-              </div>
-              <div class="muted" style="margin-top: 4px;">{{ m.kind }} · {{ m.source_repo }}</div>
-              <div class="row" style="margin-top: 6px; justify-content: flex-end;">
+      </section>
+
+      <aside class="surface">
+        <div class="section-head">
+          <h2>Live Events</h2>
+          <span id="sse-badge" style="font-size: 12px; color: var(--muted);">Idle</span>
+        </div>
+        <div id="event-log" class="feed">
+          <div class="empty-state">Events appear here in real time via MongoDB Atlas Change Streams.</div>
+        </div>
+
+        <details class="advanced">
+          <summary>Advanced: Step Pacing &amp; Vector Playbooks ({{ memories|length }})</summary>
+          <div style="display: flex; align-items: center; gap: 8px; margin-top: 12px;">
+            <label for="step-delay" style="font-size: 12px; color: var(--muted);">Step delay (s):</label>
+            <input id="step-delay" type="text" value="0.8" style="width: 68px; height: 28px;" />
+            <button class="btn btn-sm" onclick="bootstrapSandbox()">Re-seed Sandbox</button>
+          </div>
+          <div id="memory-list" style="margin-top: 8px;">
+            {% for m in memories %}
+              <div class="playbook-row">
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.title }}</span>
                 {% if m.status == 'active' %}
-                  <button class="btn btn-sm btn-danger" onclick="toggleMemory('{{ m.memory_id }}', false)">Invalidate</button>
+                  <button class="btn btn-sm" onclick="toggleMemory('{{ m.memory_id }}', false)">Invalidate</button>
                 {% else %}
-                  <button class="btn btn-sm btn-emerald" onclick="toggleMemory('{{ m.memory_id }}', true)">Restore</button>
+                  <button class="btn btn-sm btn-ok" onclick="toggleMemory('{{ m.memory_id }}', true)">Restore</button>
                 {% endif %}
               </div>
-            </div>
-          {% endfor %}
-        </div>
-      </div>
-    </section>
-  </main>
+            {% endfor %}
+          </div>
+        </details>
+      </aside>
+    </main>
+  </div>
 
   <script>
     let currentRunId = "{{ initial_run_id }}";
     let eventSource = null;
-    let selectedIssue = null;
     let mediaRecorder = null;
     let audioChunks = [];
 
-    const firstIssue = document.querySelector(".issue-item");
-    if (firstIssue) {
-      selectedIssue = {
-        number: Number(firstIssue.dataset.number),
-        title: firstIssue.dataset.title,
-        body: firstIssue.dataset.body,
-      };
+    function badgeClass(status) {
+      const s = String(status || "").toLowerCase();
+      if (s === "verified_took_effect" || s === "completed") return "badge-ok";
+      if (s === "sent_unverified" || s === "awaiting_approval") return "badge-warn";
+      if (s === "crashed" || s === "rolled_back" || s === "failed" || s === "blocked_policy") return "badge-danger";
+      if (s === "running" || s === "drifted" || s === "adapted") return "badge-info";
+      return "badge-neutral";
     }
 
-    function selectIssue(el) {
-      document.querySelectorAll(".issue-item").forEach((node) => node.classList.remove("selected"));
-      el.classList.add("selected");
-      selectedIssue = {
-        number: Number(el.dataset.number),
-        title: el.dataset.title,
-        body: el.dataset.body,
-      };
-    }
-
-    function statusClass(status) {
-      const s = String(status || "pending").toLowerCase();
-      if (s === "verified_took_effect" || s === "completed") return "pill-verified";
-      if (s === "sent_unverified") return "pill-only_sent";
-      if (s === "crashed" || s === "rolled_back" || s === "failed" || s === "blocked_policy") return "pill-crashed";
-      if (s === "running" || s === "drifted" || s === "adapted") return "pill-running";
-      return "pill-waiting_approval";
+    function formatStatus(status) {
+      return String(status || "pending").replaceAll("_", " ");
     }
 
     function escapeHtml(text) {
@@ -428,6 +501,22 @@
         .replaceAll(">", "&gt;");
     }
 
+    function summarizeStep(cp) {
+      if (cp.adaptation_used) return cp.adaptation_used;
+      const ext = cp.external_ref || "";
+      if (cp.probe_result && cp.probe_result.active !== undefined) {
+        return cp.probe_result.active
+          ? `Verified active (${cp.probe_result.api_version || "v1"}): ${ext}`
+          : `Probe failed (active=false, attempts: ${cp.attempts})`;
+      }
+      if (ext.startsWith("http")) {
+        return `<a href="${escapeHtml(ext)}" target="_blank">${escapeHtml(ext)}</a>`;
+      }
+      if (cp.status === "rolled_back") return "Compensating rollback completed.";
+      if (cp.took_effect) return `Verified (${cp.attempts} attempt${cp.attempts === 1 ? "" : "s"}).`;
+      return cp.error_message ? escapeHtml(cp.error_message) : "Waiting…";
+    }
+
     function renderSnapshot(snap) {
       if (!snap || !snap.run) return;
       const run = snap.run;
@@ -435,84 +524,64 @@
       const events = snap.events || [];
       const target = snap.target || {};
 
-      document.getElementById("active-run-id").textContent = run.run_id;
-      const pill = document.getElementById("run-status-pill");
-      pill.textContent = run.status;
-      pill.className = "pill " + statusClass(run.status);
+      const statusBadge = document.getElementById("run-status-badge");
+      statusBadge.textContent = formatStatus(run.status);
+      statusBadge.className = "badge " + badgeClass(run.status);
 
       document.getElementById("kpi-pid").textContent = run.worker_pid || "stopped";
-      document.getElementById("kpi-crashes").textContent = String(run.crash_count || 0);
       document.getElementById("kpi-deps").textContent = String((target.deployments || []).length);
 
-      document.querySelectorAll(".btn-chaos").forEach((btn) => {
+      const prSpan = document.getElementById("run-pr-link");
+      prSpan.innerHTML = run.pr_url
+        ? `<a href="${escapeHtml(run.pr_url)}" target="_blank">PR ↗</a>`
+        : "";
+
+      document.querySelectorAll(".segmented button").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.mode === target.chaos_mode);
       });
 
-      const links = [];
-      if (run.branch_name) links.push(`Branch: <code>${escapeHtml(run.branch_name)}</code>`);
-      if (run.pr_url) links.push(`<a href="${escapeHtml(run.pr_url)}" target="_blank">Open Pull Request ↗</a>`);
-      if (run.deployment_id) links.push(`Deploy ID: <code>${escapeHtml(run.deployment_id)}</code>`);
-      if (run.summary) links.push(`<div>${escapeHtml(run.summary)}</div>`);
-      document.getElementById("run-links").innerHTML = links.length
-        ? links.join(" · ")
-        : `Issue #${run.issue_number}: ${escapeHtml(run.issue_title)}`;
+      const status = String(run.status || "").toLowerCase();
+      document.getElementById("btn-kill").classList.toggle("hidden", !(status === "running" && run.worker_pid));
+      document.getElementById("btn-resume").classList.toggle("hidden", !(status === "crashed" || (status === "running" && !run.worker_pid)));
+      document.getElementById("btn-rollback").classList.toggle("hidden", !["running", "crashed", "awaiting_approval", "completed"].includes(status));
 
-      const stepHtml = checkpoints.map((cp) => {
-        const cls = String(cp.status || "").toLowerCase();
-        const extRef = cp.external_ref || "";
-        const refHtml = extRef.startsWith("http")
-          ? `<a href="${escapeHtml(extRef)}" target="_blank">${escapeHtml(extRef)}</a>`
-          : extRef
-            ? `<code>${escapeHtml(extRef)}</code>`
-            : "";
-        const probeText = cp.probe_result && Object.keys(cp.probe_result).length
-          ? JSON.stringify(cp.probe_result)
-          : "";
-        return `
-          <div class="step-card ${cls}">
-            <div class="row" style="justify-content: space-between;">
-              <strong>Step ${cp.step_seq}: ${escapeHtml(cp.title)}</strong>
-              <span class="pill ${statusClass(cp.status)}">${escapeHtml(cp.status)}</span>
-            </div>
-            <div class="meta-row">
-              <span>Key: <code>${escapeHtml(cp.idempotency_key)}</code></span>
-              <span>Attempts: ${cp.attempts}</span>
-              <span>Took Effect: <strong>${cp.took_effect}</strong></span>
-            </div>
-            ${cp.adaptation_used ? `<div class="muted" style="margin-top: 6px; color: #67e8f9;">Drift Adaptation: ${escapeHtml(cp.adaptation_used)}</div>` : ""}
-            ${probeText ? `<div class="muted" style="margin-top: 4px;">Probe: <code>${escapeHtml(probeText)}</code></div>` : ""}
-            ${refHtml ? `<div class="muted" style="margin-top: 4px;">Ref: ${refHtml}</div>` : ""}
-          </div>
-        `;
-      }).join("");
-      document.getElementById("step-list").innerHTML = stepHtml || '<div class="muted">Worker initializing checkpoints...</div>';
-
+      const approvalBanner = document.getElementById("approval-banner");
       const audioEvent = events.find((e) => e.details && e.details.audio_url);
       const audioEl = document.getElementById("briefing-audio");
       const audioContainer = document.getElementById("audio-container");
-      if (audioEvent && audioEvent.details.audio_url) {
-        audioContainer.textContent = audioEvent.message;
-        if (audioEl.getAttribute("src") !== audioEvent.details.audio_url) {
-          audioEl.setAttribute("src", audioEvent.details.audio_url);
+      if (status === "awaiting_approval") {
+        approvalBanner.classList.add("visible");
+        audioContainer.textContent = run.voice_briefing_text || "Confirm adaptation to continue deployment.";
+        if (audioEvent && audioEvent.details.audio_url) {
+          if (audioEl.getAttribute("src") !== audioEvent.details.audio_url) {
+            audioEl.setAttribute("src", audioEvent.details.audio_url);
+          }
+          audioEl.style.display = "block";
+        } else {
+          audioEl.style.display = "none";
         }
-        audioEl.style.display = "block";
       } else {
-        audioEl.style.display = "none";
-        audioContainer.textContent = run.status === "awaiting_approval"
-          ? (run.voice_briefing_text || "Approval gate active — speak or click Approve.")
-          : "No active voice escalation yet.";
+        approvalBanner.classList.remove("visible");
       }
 
-      const evHtml = events.map((ev) => `
-        <div class="event-item">
-          <div class="row" style="justify-content: space-between;">
-            <strong>${escapeHtml(ev.event_type)}</strong>
-            <span class="muted">${escapeHtml(ev.step_key)}</span>
+      const stepHtml = checkpoints.map((cp) => `
+        <div class="step-row">
+          <div class="step-top">
+            <span class="step-title">${cp.step_seq}. ${escapeHtml(cp.title)}</span>
+            <span class="badge ${badgeClass(cp.status)}">${escapeHtml(formatStatus(cp.status))}</span>
           </div>
-          <div style="margin-top: 3px;">${escapeHtml(ev.message)}</div>
+          <div class="step-detail">${summarizeStep(cp)}</div>
         </div>
       `).join("");
-      document.getElementById("event-log").innerHTML = evHtml || '<div class="muted">No events recorded yet.</div>';
+      document.getElementById("step-list").innerHTML = stepHtml || '<div class="empty-state">Starting worker…</div>';
+
+      const evHtml = events.slice(0, 16).map((ev) => `
+        <div class="feed-row">
+          <div class="feed-type">${escapeHtml(ev.event_type)}</div>
+          <div class="feed-msg">${escapeHtml(ev.message)}</div>
+        </div>
+      `).join("");
+      document.getElementById("event-log").innerHTML = evHtml || '<div class="empty-state">No events yet.</div>';
     }
 
     function connectStream(runId) {
@@ -522,13 +591,13 @@
       }
       if (!runId) return;
       currentRunId = runId;
-      document.getElementById("sse-badge").textContent = "SSE connected";
+      document.getElementById("sse-badge").textContent = "Live";
       eventSource = new EventSource(`/runs/${runId}/stream`);
       eventSource.addEventListener("snapshot", (ev) => {
         renderSnapshot(JSON.parse(ev.data));
       });
       eventSource.onerror = () => {
-        document.getElementById("sse-badge").textContent = "SSE reconnecting...";
+        document.getElementById("sse-badge").textContent = "Reconnecting…";
       };
     }
 
@@ -541,7 +610,7 @@
 
     async function setChaosMode(mode) {
       await fetch(`/chaos/${mode}`, { method: "POST" });
-      document.querySelectorAll(".btn-chaos").forEach((btn) => {
+      document.querySelectorAll(".segmented button").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.mode === mode);
       });
     }
@@ -553,32 +622,34 @@
     }
 
     async function bootstrapSandbox() {
-      const resp = await fetch("/sandbox/bootstrap", { method: "POST" });
-      const data = await resp.json();
-      document.getElementById("sandbox-repo").textContent = data.repo || "";
+      await fetch("/sandbox/bootstrap", { method: "POST" });
       window.location.reload();
     }
 
     async function startRun() {
-      const issue = selectedIssue || { number: 1, title: "Fix service webhook rate limiter", body: "" };
+      const selIssue = document.getElementById("issue-select");
+      const opt = selIssue.options[selIssue.selectedIndex];
       const stepDelay = parseFloat(document.getElementById("step-delay").value || "0.8");
       const resp = await fetch("/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          issue_number: issue.number,
-          issue_title: issue.title,
-          issue_body: issue.body,
+          issue_number: opt ? Number(opt.value) : 1,
+          issue_title: opt ? opt.dataset.title : "Fix webhook rate limit",
+          issue_body: opt ? opt.dataset.body : "",
           step_delay: isNaN(stepDelay) ? 0.8 : stepDelay,
           auto_spawn: true,
         }),
       });
       const data = await resp.json();
       const sel = document.getElementById("run-selector");
-      const opt = document.createElement("option");
-      opt.value = data.run_id;
-      opt.textContent = `${data.run_id} · #${issue.number} (running)`;
-      sel.prepend(opt);
+      if (sel.options.length === 1 && sel.options[0].value === "") {
+        sel.innerHTML = "";
+      }
+      const runOpt = document.createElement("option");
+      runOpt.value = data.run_id;
+      runOpt.textContent = `${data.run_id} · #${opt ? opt.value : 1} (running)`;
+      sel.prepend(runOpt);
       sel.value = data.run_id;
       connectStream(data.run_id);
     }
@@ -601,7 +672,7 @@
 
     async function approveText() {
       if (!currentRunId) return;
-      const note = document.getElementById("approval-note").value || "Approved after verification";
+      const note = document.getElementById("approval-note").value || "Approved";
       await fetch(`/runs/${currentRunId}/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -615,8 +686,8 @@
       const btn = document.getElementById("record-btn");
       if (mediaRecorder && mediaRecorder.state === "recording") {
         mediaRecorder.stop();
-        btn.textContent = "Record Voice Decision";
-        status.textContent = "Uploading to Scribe v2...";
+        btn.textContent = "Speak Decision";
+        status.textContent = "Transcribing via Scribe v2…";
         return;
       }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -629,38 +700,27 @@
         form.append("audio", blob, "operator.webm");
         const resp = await fetch(`/runs/${currentRunId}/approve`, { method: "POST", body: form });
         const data = await resp.json();
-        status.textContent = `Scribe: "${data.transcript || ""}"`;
+        status.textContent = `Heard: "${data.transcript || ""}"`;
         stream.getTracks().forEach((t) => t.stop());
       };
       mediaRecorder.start();
-      btn.textContent = "Stop & Send Audio";
-      status.textContent = "Recording...";
-    }
-
-    async function refreshMemories() {
-      const resp = await fetch("/api/memories");
-      const data = await resp.json();
-      const html = (data.memories || []).map((m) => `
-        <div class="card">
-          <div class="row" style="justify-content: space-between;">
-            <strong style="font-size: 12px;">${escapeHtml(m.title)}</strong>
-            <span class="pill ${m.status === "active" ? "pill-verified" : "pill-crashed"}">${escapeHtml(m.status)}</span>
-          </div>
-          <div class="muted" style="margin-top: 4px;">${escapeHtml(m.kind)} · ${escapeHtml(m.source_repo)}</div>
-          <div class="row" style="margin-top: 6px; justify-content: flex-end;">
-            ${m.status === "active"
-              ? `<button class="btn btn-sm btn-danger" onclick="toggleMemory('${escapeHtml(m.memory_id)}', false)">Invalidate</button>`
-              : `<button class="btn btn-sm btn-emerald" onclick="toggleMemory('${escapeHtml(m.memory_id)}', true)">Restore</button>`
-            }
-          </div>
-        </div>
-      `).join("");
-      document.getElementById("memory-list").innerHTML = html;
+      btn.textContent = "Stop & Send";
+      status.textContent = "Recording…";
     }
 
     async function toggleMemory(memoryId, restore) {
       await fetch(`/memories/${memoryId}/invalidate?restore=${restore}`, { method: "POST" });
-      await refreshMemories();
+      const resp = await fetch("/api/memories");
+      const data = await resp.json();
+      document.getElementById("memory-list").innerHTML = (data.memories || []).map((m) => `
+        <div class="playbook-row">
+          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(m.title)}</span>
+          ${m.status === "active"
+            ? `<button class="btn btn-sm" onclick="toggleMemory('${escapeHtml(m.memory_id)}', false)">Invalidate</button>`
+            : `<button class="btn btn-sm btn-ok" onclick="toggleMemory('${escapeHtml(m.memory_id)}', true)">Restore</button>`
+          }
+        </div>
+      `).join("");
     }
 
     if (currentRunId) {

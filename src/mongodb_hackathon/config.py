@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = Field(
         default="JBFqnCBsd6RMkjVDRZzb", alias="ELEVENLABS_VOICE_ID"
     )
+    elevenlabs_tts_model: str = Field(
+        default="eleven_flash_v2_5", alias="ELEVENLABS_TTS_MODEL"
+    )
+    elevenlabs_stt_model: str = Field(default="scribe_v2", alias="ELEVENLABS_STT_MODEL")
+    elevenlabs_output_format: str = Field(
+        default="mp3_22050_32", alias="ELEVENLABS_OUTPUT_FORMAT"
+    )
 
     github_sandbox_repo: str = Field(default="", alias="GITHUB_SANDBOX_REPO")
     github_token: str = Field(default="", alias="GITHUB_TOKEN")

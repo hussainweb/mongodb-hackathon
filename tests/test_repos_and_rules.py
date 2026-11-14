@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -413,13 +415,30 @@ async def test_worker_scopes_recall_and_stamps_learned_memory_by_repo(
             transport=httpx.ASGITransport(app=target_app), base_url="http://test-target"
         ) as client:
             await client.post("/chaos/mode", json={"mode": "drift_v2"})
-            final_run = await execute_job(
-                run_id=run_id,
-                store=atlas_store,
-                github=gh,
-                target_client=client,
-                step_delay=0.0,
-            )
+
+            async def _auto_approve_if_needed() -> None:
+                for _ in range(30):
+                    await asyncio.sleep(0.3)
+                    r = await atlas_store.get_run(run_id)
+                    if r and r.status == RunStatus.AWAITING_APPROVAL:
+                        await atlas_store.update_run(
+                            run_id, approval_granted=True, approval_note="Auto-approved"
+                        )
+                        break
+
+            auto_app_task = asyncio.create_task(_auto_approve_if_needed())
+            try:
+                final_run = await execute_job(
+                    run_id=run_id,
+                    store=atlas_store,
+                    github=gh,
+                    target_client=client,
+                    step_delay=0.0,
+                )
+            finally:
+                auto_app_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await auto_app_task
 
         assert final_run.status == RunStatus.COMPLETED
         cp1 = await atlas_store.get_checkpoint(run_id, "step_1_plan")

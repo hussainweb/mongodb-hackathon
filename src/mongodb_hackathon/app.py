@@ -259,12 +259,38 @@ def _deps(
     request: Request,
 ) -> tuple[MongoStore, GitHubSandboxAdapter, httpx.AsyncClient, Settings]:
     state = request.app.state
-    return state.store, state.github, state.target_client, state.settings
+    settings: Settings = getattr(state, "settings", None) or get_settings()
+    store: MongoStore = getattr(state, "store", None) or MongoStore(settings)
+    github: GitHubSandboxAdapter = getattr(
+        state, "github", None
+    ) or GitHubSandboxAdapter(settings, token="")
+    http: httpx.AsyncClient = getattr(state, "target_client", None) or httpx.AsyncClient(
+        base_url=settings.target_service_url, timeout=4.0
+    )
+    return store, github, http, settings
+
+
+async def _resolve_active_run_id(
+    store: MongoStore, requested_run_id: str = ""
+) -> str:
+    """Resolve an active or requested run_id, preferring in-flight runs over completed ones."""
+    if requested_run_id.strip():
+        return requested_run_id.strip()
+    runs = await store.list_runs(limit=25)
+    if not runs:
+        return ""
+    for r in runs:
+        if (
+            r.status in {RunStatus.RUNNING, RunStatus.AWAITING_APPROVAL}
+            or r.step_paused
+        ):
+            return r.run_id
+    return runs[0].run_id
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
-    """Render the single-screen FinishLine Operator & Chaos Control Room."""
+    """Render the FinishLine Operator & Chaos Control Room Workspace page."""
     store, github, http, settings = _deps(request)
     runs = await store.list_runs(limit=15)
     target = await _fetch_target_state(http)
@@ -275,12 +301,12 @@ async def index(request: Request) -> HTMLResponse:
     if github.has_token and repo:
         try:
             issues = await github.list_open_issues(repo, limit=8)
-        except httpx.HTTPError, OSError, RuntimeError:
+        except (httpx.HTTPError, OSError, RuntimeError):
             issues = []
     if not issues:
         issues = FALLBACK_DEMO_ISSUES
 
-    initial_run_id = runs[0].run_id if runs else ""
+    initial_run_id = await _resolve_active_run_id(store)
     initial_snapshot = (
         await _build_run_snapshot(store, http, initial_run_id)
         if initial_run_id
@@ -291,6 +317,7 @@ async def index(request: Request) -> HTMLResponse:
         request,
         "index.html",
         {
+            "active_page": "workspace",
             "sandbox_repo": repo or "dry-run/finishline-demo-sandbox",
             "has_github_token": github.has_token,
             "runs": [r.model_dump(mode="json") for r in runs],
@@ -300,6 +327,63 @@ async def index(request: Request) -> HTMLResponse:
             "chaos_modes": [m.value for m in ChaosMode],
             "initial_run_id": initial_run_id,
             "initial_snapshot": initial_snapshot,
+        },
+    )
+
+
+@app.get("/infra", response_class=HTMLResponse)
+async def infra_page(request: Request) -> HTMLResponse:
+    """Render the standalone Infrastructure and Target Microservice control room."""
+    store, _, http, settings = _deps(request)
+    target = await _fetch_target_state(http)
+    initial_run_id = await _resolve_active_run_id(store)
+    initial_snapshot = (
+        await _build_run_snapshot(store, http, initial_run_id)
+        if initial_run_id
+        else None
+    )
+    repo = settings.github_sandbox_repo.strip()
+
+    return templates.TemplateResponse(
+        request,
+        "infra.html",
+        {
+            "active_page": "infra",
+            "target": target,
+            "chaos_modes": [m.value for m in ChaosMode],
+            "initial_run_id": initial_run_id,
+            "initial_snapshot": initial_snapshot,
+            "sandbox_repo": repo or "dry-run/finishline-demo-sandbox",
+        },
+    )
+
+
+@app.get("/store", response_class=HTMLResponse)
+async def store_page(request: Request) -> HTMLResponse:
+    """Render the standalone MongoDB Atlas Store page (collections, memories, and demo repos)."""
+    store, _, http, settings = _deps(request)
+    runs = await store.list_runs(limit=30)
+    memories = await store.list_memories(limit=50)
+    repos = await store.list_repos()
+    initial_run_id = await _resolve_active_run_id(store)
+    initial_snapshot = (
+        await _build_run_snapshot(store, http, initial_run_id)
+        if initial_run_id
+        else None
+    )
+    repo = settings.github_sandbox_repo.strip()
+
+    return templates.TemplateResponse(
+        request,
+        "store.html",
+        {
+            "active_page": "store",
+            "runs": [r.model_dump(mode="json") for r in runs],
+            "memories": memories,
+            "repos": [r.model_dump(mode="json") for r in repos],
+            "initial_run_id": initial_run_id,
+            "initial_snapshot": initial_snapshot,
+            "sandbox_repo": repo or "dry-run/finishline-demo-sandbox",
         },
     )
 
@@ -973,8 +1057,6 @@ async def stream_run_events(request: Request, run_id: str) -> StreamingResponse:
 
         try:
             while True:
-                if await request.is_disconnected():
-                    break
                 with suppress(TimeoutError):
                     await asyncio.wait_for(queue.get(), timeout=2.0)
                     # Drain any burst of rapid Atlas updates
@@ -992,8 +1074,125 @@ async def stream_run_events(request: Request, run_id: str) -> StreamingResponse:
                         yield ": keepalive\n\n"
         finally:
             pump_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await pump_task
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/active-run")
+async def get_active_run(request: Request, run_id: str = "") -> JSONResponse:
+    """Fetch run snapshot for the specified or currently active run."""
+    store, _, http, _ = _deps(request)
+    target_run_id = await _resolve_active_run_id(store, run_id)
+    if not target_run_id:
+        target = await _fetch_target_state(http)
+        return JSONResponse(
+            {
+                "run": None,
+                "checkpoints": [],
+                "events": [],
+                "target": target,
+            }
+        )
+    snapshot = await _build_run_snapshot(store, http, target_run_id)
+    if snapshot is None:
+        target = await _fetch_target_state(http)
+        return JSONResponse(
+            {
+                "run": None,
+                "checkpoints": [],
+                "events": [],
+                "target": target,
+            }
+        )
+    return JSONResponse(snapshot)
+
+
+@app.get("/api/active-run/stream")
+async def stream_active_run_events(
+    request: Request, run_id: str = ""
+) -> StreamingResponse:
+    """Stream active run snapshots in real time via Change Streams + SSE."""
+    store, _, http, _ = _deps(request)
+
+    async def event_generator() -> AsyncGenerator[str]:
+        fixed_run_id = run_id.strip()
+        current_run_id = fixed_run_id or await _resolve_active_run_id(store)
+        initial = (
+            await _build_run_snapshot(store, http, current_run_id)
+            if current_run_id
+            else None
+        )
+        if initial is not None:
+            yield f"event: snapshot\ndata: {json.dumps(initial)}\n\n"
+        else:
+            empty_snap = {
+                "run": None,
+                "checkpoints": [],
+                "events": [],
+                "target": await _fetch_target_state(http),
+            }
+            yield f"event: snapshot\ndata: {json.dumps(empty_snap)}\n\n"
+
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=32)
+
+        async def _pump_changes() -> None:
+            try:
+                target_to_watch = fixed_run_id or current_run_id
+                async for change in store.watch_run_stream(target_to_watch):
+                    if queue.full():
+                        with suppress(asyncio.QueueEmpty):
+                            queue.get_nowait()
+                    await queue.put(change)
+            except (asyncio.CancelledError, PyMongoError, OSError, RuntimeError):
+                return
+
+        pump_task = asyncio.create_task(_pump_changes())
+        last_signature = json.dumps(initial, sort_keys=True) if initial else ""
+
+        try:
+            while True:
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(queue.get(), timeout=2.0)
+                    while not queue.empty():
+                        with suppress(asyncio.QueueEmpty):
+                            queue.get_nowait()
+
+                active_id = fixed_run_id or await _resolve_active_run_id(store)
+                snap = (
+                    await _build_run_snapshot(store, http, active_id)
+                    if active_id
+                    else None
+                )
+                if snap is not None:
+                    sig = json.dumps(snap, sort_keys=True)
+                    if sig != last_signature:
+                        last_signature = sig
+                        yield f"event: snapshot\ndata: {json.dumps(snap)}\n\n"
+                    else:
+                        yield ": keepalive\n\n"
+                else:
+                    empty_snap = {
+                        "run": None,
+                        "checkpoints": [],
+                        "events": [],
+                        "target": await _fetch_target_state(http),
+                    }
+                    sig = json.dumps(empty_snap, sort_keys=True)
+                    if sig != last_signature:
+                        last_signature = sig
+                        yield f"event: snapshot\ndata: {json.dumps(empty_snap)}\n\n"
+                    else:
+                        yield ": keepalive\n\n"
+        finally:
+            pump_task.cancel()
 
     return StreamingResponse(
         event_generator(),

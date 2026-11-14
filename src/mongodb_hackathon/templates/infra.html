@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+
+{% block title %}Infrastructure Control — FinishLine{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Target Infrastructure Control</h1>
+    <div class="page-subtitle">Inspect deployment target microservice (:8001), inject chaos modes, and observe active probe verifications.</div>
+  </div>
+  <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+    <button class="btn btn-ghost btn-sm" onclick="refreshTargetState()">↻ Refresh State</button>
+    <button class="btn btn-sm" onclick="resetTarget()">Reset Target to Normal</button>
+  </div>
+</div>
+
+<div class="grid-2col">
+  <section class="surface">
+    <div class="section-head">
+      <div>
+        <h2>Chaos Engineering Controls</h2>
+        <div class="section-head-desc">Toggle chaos behaviors on the downstream deployment target microservice to test resilience.</div>
+      </div>
+      <span id="target-online-badge" class="badge {% if target.online %}badge-ok{% else %}badge-warn{% endif %}">
+        {{ 'Online (:8001)' if target.online else 'Offline / Mock' }}
+      </span>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: var(--radius-sm);">
+        <div>
+          <div style="font-weight: 500; font-size: 13.5px;">Active Chaos Mode</div>
+          <div style="font-size: 12px; color: var(--muted);">Controls how the target service responds to deployment patches and probes.</div>
+        </div>
+        <div class="segmented" role="group" aria-label="Target Chaos Mode">
+          {% set labels = {
+            'normal': 'Normal',
+            'silent_drop_202': 'Silent 202',
+            'drift_v2': 'Drift v2',
+            'require_approval_gate': 'Approval Gate'
+          } %}
+          {% for mode in chaos_modes %}
+            <button
+              class="{% if target.get('chaos_mode') == mode %}active{% endif %}"
+              data-mode="{{ mode }}"
+              onclick="setChaosMode('{{ mode }}')"
+            >{{ labels.get(mode, mode) }}</button>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div>
+        <div style="font-weight: 500; margin-bottom: 8px;">Active Deployments on Target (<span id="dep-count">{{ target.deployments|length }}</span>)</div>
+        <div class="data-table-wrap">
+          <table class="data-table" id="deployments-table">
+            <thead>
+              <tr>
+                <th>Deployment ID</th>
+                <th>Service</th>
+                <th>Branch</th>
+                <th>Rate Limit / RPS</th>
+                <th>API Version</th>
+              </tr>
+            </thead>
+            <tbody id="deployments-body">
+              {% if not target.deployments %}
+                <tr>
+                  <td colspan="5" style="text-align: center; color: var(--muted); padding: 16px;">No deployments registered on target microservice.</td>
+                </tr>
+              {% endif %}
+              {% for d in target.deployments %}
+                <tr>
+                  <td><code class="mono">{{ d.deployment_id or d.id or '—' }}</code></td>
+                  <td><strong>{{ d.service_name or 'target' }}</strong></td>
+                  <td><code class="mono">{{ d.branch or '—' }}</code></td>
+                  <td>{{ d.max_rps or d.rate_limit or '—' }}</td>
+                  <td><span class="badge badge-info">{{ d.api_version or 'v1' }}</span></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="surface">
+    <div class="section-head">
+      <div>
+        <h2>Target Request Traffic</h2>
+        <div class="section-head-desc">Incoming calls received by the target deployment microservice.</div>
+      </div>
+      <span class="badge badge-neutral" id="req-count">{{ target.recent_requests|length }} logged</span>
+    </div>
+
+    <div class="feed" id="requests-feed">
+      {% if not target.recent_requests %}
+        <div class="empty-state">No requests recorded on target service yet.</div>
+      {% endif %}
+      {% for req in target.recent_requests|reverse %}
+        <div class="feed-row">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+            <span class="feed-type">{{ req.method }} {{ req.path }}</span>
+            <span class="badge {% if req.status < 300 %}badge-ok{% elif req.status < 500 %}badge-warn{% else %}badge-danger{% endif %}">{{ req.status }}</span>
+          </div>
+          <div class="feed-msg mono">{{ req.timestamp or '' }} · {% if req.body %}{{ req.body | tojson }}{% endif %}</div>
+        </div>
+      {% endfor %}
+    </div>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function setChaosMode(mode) {
+    try {
+      const resp = await fetch(`/chaos/${mode}`, { method: "POST" });
+      if (resp.ok) {
+        document.querySelectorAll(".segmented button").forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.mode === mode);
+        });
+        await refreshTargetState();
+      }
+    } catch (err) {
+      console.warn("Failed to set chaos mode:", err);
+    }
+  }
+
+  async function resetTarget() {
+    try {
+      await fetch("/target/reset", { method: "POST" });
+      await setChaosMode("normal");
+      await refreshTargetState();
+    } catch (err) {
+      console.warn("Failed to reset target:", err);
+    }
+  }
+
+  async function refreshTargetState() {
+    try {
+      const resp = await fetch("/api/target-state");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      renderTargetState(data);
+    } catch (err) {
+      console.warn("Error refreshing target state:", err);
+    }
+  }
+
+  function renderTargetState(data) {
+    if (!data) return;
+    const badge = document.getElementById("target-online-badge");
+    if (badge) {
+      badge.textContent = data.online ? "Online (:8001)" : "Offline / Mock";
+      badge.className = "badge " + (data.online ? "badge-ok" : "badge-warn");
+    }
+
+    document.querySelectorAll(".segmented button").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.mode === data.chaos_mode);
+    });
+
+    const deps = data.deployments || [];
+    const depCount = document.getElementById("dep-count");
+    if (depCount) depCount.textContent = String(deps.length);
+
+    const tbody = document.getElementById("deployments-body");
+    if (tbody) {
+      if (deps.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--muted); padding: 16px;">No deployments registered on target microservice.</td></tr>';
+      } else {
+        tbody.innerHTML = deps.map((d) => `
+          <tr>
+            <td><code class="mono">${FinishLineLiveRun.escapeHtml(d.deployment_id || d.id || "—")}</code></td>
+            <td><strong>${FinishLineLiveRun.escapeHtml(d.service_name || "target")}</strong></td>
+            <td><code class="mono">${FinishLineLiveRun.escapeHtml(d.branch || "—")}</code></td>
+            <td>${FinishLineLiveRun.escapeHtml(d.max_rps || d.rate_limit || "—")}</td>
+            <td><span class="badge badge-info">${FinishLineLiveRun.escapeHtml(d.api_version || "v1")}</span></td>
+          </tr>
+        `).join("");
+      }
+    }
+
+    const reqs = data.recent_requests || [];
+    const reqCount = document.getElementById("req-count");
+    if (reqCount) reqCount.textContent = `${reqs.length} logged`;
+
+    const feed = document.getElementById("requests-feed");
+    if (feed) {
+      if (reqs.length === 0) {
+        feed.innerHTML = '<div class="empty-state">No requests recorded on target service yet.</div>';
+      } else {
+        feed.innerHTML = [...reqs].reverse().slice(0, 30).map((r) => {
+          const statusCls = r.status < 300 ? "badge-ok" : (r.status < 500 ? "badge-warn" : "badge-danger");
+          const bodyStr = r.body ? JSON.stringify(r.body) : "";
+          return `
+            <div class="feed-row">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                <span class="feed-type">${FinishLineLiveRun.escapeHtml(r.method)} ${FinishLineLiveRun.escapeHtml(r.path)}</span>
+                <span class="badge ${statusCls}">${r.status}</span>
+              </div>
+              <div class="feed-msg mono">${FinishLineLiveRun.escapeHtml(r.timestamp || "")} · ${FinishLineLiveRun.escapeHtml(bodyStr)}</div>
+            </div>
+          `;
+        }).join("");
+      }
+    }
+  }
+
+  // Listen for live snapshot events from SSE
+  document.addEventListener("finishline:snapshot", function (ev) {
+    if (ev.detail && ev.detail.target) {
+      renderTargetState(ev.detail.target);
+    }
+  });
+</script>
+{% endblock %}

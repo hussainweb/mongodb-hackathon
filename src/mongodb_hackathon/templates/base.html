@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}FinishLine — Release Verification &amp; Crash Recovery{% endblock %}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <div class="header-wrap">
+    <header class="topbar">
+      <div class="topbar-left">
+        <a href="/" class="brand" title="FinishLine Autonomous Release Closer">
+          <div class="brand-logo">FL</div>
+          <span class="brand-name">FinishLine</span>
+          <span class="brand-badge">Release Closer</span>
+        </a>
+
+        <nav class="nav-links" aria-label="Main Navigation">
+          <span class="nav-item-wrapper">
+            <a href="/" class="nav-link {% if active_page == 'workspace' %}active{% endif %}">Workspace</a>
+            <a href="/" target="_blank" class="nav-ext" title="Open Workspace in new window/tab">↗</a>
+          </span>
+          <span class="nav-item-wrapper">
+            <a href="/infra" class="nav-link {% if active_page == 'infra' %}active{% endif %}">Infrastructure</a>
+            <a href="/infra" target="_blank" class="nav-ext" title="Open Infrastructure in new window/tab">↗</a>
+          </span>
+          <span class="nav-item-wrapper">
+            <a href="/store" class="nav-link {% if active_page == 'store' %}active{% endif %}">MongoDB Store</a>
+            <a href="/store" target="_blank" class="nav-ext" title="Open MongoDB Store in new window/tab">↗</a>
+          </span>
+        </nav>
+      </div>
+
+      <div class="topbar-right">
+        <div class="nav-run-pill" id="nav-run-pill" title="Live Active Run Tracking">
+          <span id="nav-pulse-dot" class="pulse-dot {% if initial_snapshot and initial_snapshot.run and initial_snapshot.run.status == 'running' %}running{% elif initial_snapshot and initial_snapshot.run and initial_snapshot.run.status == 'awaiting_approval' %}awaiting{% endif %}"></span>
+          <span id="nav-run-status-text">
+            {% if initial_snapshot and initial_snapshot.run %}
+              {{ initial_snapshot.run.run_id }} · {{ initial_snapshot.run.status }}
+            {% else %}
+              No active run
+            {% endif %}
+          </span>
+        </div>
+        <code class="repo-chip" id="nav-sandbox-repo">{{ sandbox_repo | default('dry-run/finishline-demo-sandbox') }}</code>
+      </div>
+    </header>
+  </div>
+
+  {% block live_strip %}
+  <aside class="live-run-strip" id="live-run-strip" data-initial-run-id="{{ initial_run_id | default('') }}">
+    <div class="strip-inner">
+      <div class="strip-left">
+        <span class="strip-label">Active Run</span>
+        <div id="strip-empty" class="strip-empty {% if initial_snapshot and initial_snapshot.run %}hidden{% endif %}">
+          <span>No active release run. Start one from the <a href="/">Workspace</a>.</span>
+        </div>
+        <div id="strip-active" class="strip-left {% if not (initial_snapshot and initial_snapshot.run) %}hidden{% endif %}">
+          <code class="mono" id="strip-run-id">{{ initial_snapshot.run.run_id if initial_snapshot and initial_snapshot.run else '' }}</code>
+          <code class="repo-chip" id="strip-repo">{{ initial_snapshot.run.repo if initial_snapshot and initial_snapshot.run else '' }}</code>
+          <span id="strip-status-badge" class="badge badge-neutral">
+            {{ initial_snapshot.run.status if initial_snapshot and initial_snapshot.run else 'idle' }}
+          </span>
+          <span id="strip-step" class="strip-step-desc"></span>
+          <span class="mono" id="strip-pid" style="color: var(--muted); font-size: 12px;">
+            {% if initial_snapshot and initial_snapshot.run %}
+              {{ 'PID ' ~ initial_snapshot.run.worker_pid if initial_snapshot.run.worker_pid else ('paused' if initial_snapshot.run.step_paused else 'stopped') }}
+            {% endif %}
+          </span>
+          <span id="strip-pr-link">
+            {% if initial_snapshot and initial_snapshot.run and initial_snapshot.run.pr_url %}
+              <a href="{{ initial_snapshot.run.pr_url }}" target="_blank" class="nav-ext" style="font-weight: 500;">PR ↗</a>
+            {% endif %}
+          </span>
+        </div>
+      </div>
+      <div class="strip-right">
+        <button id="strip-btn-advance" class="btn btn-ok btn-sm hidden" onclick="FinishLineLiveRun.advanceLiveRun()">Advance Step ⏭</button>
+        <button id="strip-btn-kill" class="btn btn-danger btn-sm hidden" onclick="FinishLineLiveRun.killLiveRun()">SIGKILL Worker</button>
+        {% if active_page != 'workspace' %}
+          <a href="/" class="btn btn-ghost btn-sm" title="View details in Workspace">Workspace →</a>
+        {% endif %}
+      </div>
+    </div>
+  </aside>
+  {% endblock %}
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="page-footer">
+    <div>FinishLine Autonomous Release Closer &amp; MongoDB Atlas Store</div>
+    <div>MongoDB Atlas Dedicated M10 · Change Streams · Vector Search · ElevenLabs Scribe &amp; Flash</div>
+  </footer>
+
+  <script src="/static/live-run.js"></script>
+  {% if initial_snapshot %}
+  <script>
+    if (typeof FinishLineLiveRun !== "undefined") {
+      FinishLineLiveRun.updateLiveRunStrip({{ initial_snapshot | tojson | safe }});
+    }
+  </script>
+  {% endif %}
+  {% block scripts %}{% endblock %}
+</body>
+</html>

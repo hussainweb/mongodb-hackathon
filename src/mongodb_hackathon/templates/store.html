@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+
+{% block title %}MongoDB Atlas Store — FinishLine{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+      <h1 class="page-title">MongoDB Atlas Store</h1>
+      <span class="badge badge-mongo">Atlas Cluster0 · MongoDB 9.0.7</span>
+    </div>
+    <div class="page-subtitle">Inspect persisted runs, checkpoints, and vector search experience memories in MongoDB Atlas.</div>
+  </div>
+  <div style="display: flex; align-items: center; gap: 10px;">
+    <button class="btn btn-ghost btn-sm" onclick="window.location.reload()">↻ Refresh Store</button>
+  </div>
+</div>
+
+<div class="grid-2col">
+  <section class="surface">
+    <div class="section-head">
+      <div>
+        <h2>Experience Memories &amp; Scoped Rules</h2>
+        <div class="section-head-desc">Retrieved via Atlas Vector Search ($vectorSearch). Scoped by source_repo to govern agent memory.</div>
+      </div>
+      <span class="badge badge-mongo" id="memory-count">{{ memories|length }} memories</span>
+    </div>
+
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Kind</th>
+            <th>Scope (source_repo)</th>
+            <th>Title &amp; Rule</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="memories-body">
+          {% if not memories %}
+            <tr>
+              <td colspan="5" style="text-align: center; color: var(--muted); padding: 18px;">No memories in Atlas. Seed them from the Workspace or API.</td>
+            </tr>
+          {% endif %}
+          {% for m in memories %}
+            <tr>
+              <td><span class="badge badge-info">{{ m.kind }}</span></td>
+              <td><code class="repo-chip">{{ m.source_repo or '*' }}</code></td>
+              <td>
+                <div style="font-weight: 500;">{{ m.title }}</div>
+                <div style="font-size: 12px; color: var(--muted); margin-top: 2px;">{{ m.content }}</div>
+              </td>
+              <td>
+                <span class="badge {% if m.status == 'active' %}badge-ok{% else %}badge-neutral{% endif %}" id="mem-status-{{ m.memory_id }}">
+                  {{ m.status }}
+                </span>
+              </td>
+              <td>
+                {% if m.status == 'active' %}
+                  <button class="btn btn-sm btn-danger" onclick="toggleMemory('{{ m.memory_id }}', false)">Invalidate</button>
+                {% else %}
+                  <button class="btn btn-sm btn-ok" onclick="toggleMemory('{{ m.memory_id }}', true)">Restore</button>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div style="margin-top: 24px;">
+      <div class="section-head">
+        <div>
+          <h2>Curated Demo Repositories</h2>
+          <div class="section-head-desc">Multi-repo registry in Atlas <code>demo_repos</code> collection.</div>
+        </div>
+        <span class="badge badge-neutral">{{ repos|length }} registered</span>
+      </div>
+
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Repository</th>
+              <th>Mode</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% if not repos %}
+              <tr>
+                <td colspan="3" style="text-align: center; color: var(--muted); padding: 16px;">No demo repos registered.</td>
+              </tr>
+            {% endif %}
+            {% for r in repos %}
+              <tr>
+                <td>
+                  <strong>{{ r.label or r.repo }}</strong>
+                  <div><code class="mono" style="font-size: 11.5px; color: var(--muted);">{{ r.repo }}</code></div>
+                </td>
+                <td>
+                  {% if r.is_live %}
+                    <span class="badge badge-ok">Live GitHub</span>
+                  {% else %}
+                    <span class="badge badge-neutral">Dry Run Mock</span>
+                  {% endif %}
+                </td>
+                <td style="color: var(--muted); font-size: 12.5px;">{{ r.description or '—' }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <aside class="surface">
+    <div class="section-head">
+      <div>
+        <h2>Job Runs (Atlas Collection)</h2>
+        <div class="section-head-desc">Autonomous runs recorded with durable checkpoints.</div>
+      </div>
+      <span class="badge badge-neutral" id="runs-count">{{ runs|length }} runs</span>
+    </div>
+
+    <div class="feed" id="runs-feed">
+      {% if not runs %}
+        <div class="empty-state">No job runs recorded in Atlas yet.</div>
+      {% endif %}
+      {% for r in runs %}
+        <div class="feed-row" style="padding: 10px 0;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <code class="mono" style="font-weight: 600;">{{ r.run_id }}</code>
+              <code class="repo-chip" style="font-size: 11px;">{{ r.repo }}</code>
+            </div>
+            <span class="badge {{ 'badge-ok' if r.status == 'completed' else ('badge-warn' if r.status == 'awaiting_approval' else ('badge-danger' if r.status in ['crashed', 'failed', 'rolled_back'] else 'badge-info')) }}">{{ r.status }}</span>
+          </div>
+          <div style="font-size: 12.5px; margin-top: 4px; color: var(--text-secondary);">
+            #{{ r.issue_number }} · {{ r.issue_title }}
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 11.5px; color: var(--muted);">
+            <span>Step {{ r.current_step }}/5 · PID: {{ r.worker_pid or 'stopped' }}</span>
+            {% if r.pr_url %}
+              <a href="{{ r.pr_url }}" target="_blank">View PR ↗</a>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function toggleMemory(memoryId, restore) {
+    try {
+      const resp = await fetch(`/memories/${memoryId}/invalidate?restore=${restore}`, { method: "POST" });
+      if (resp.ok) {
+        window.location.reload();
+      }
+    } catch (err) {
+      console.warn("Error toggling memory:", err);
+    }
+  }
+
+  // Update when active run changes
+  document.addEventListener("finishline:snapshot", function (ev) {
+    if (ev.detail && ev.detail.run) {
+      // Refresh run pill in header and live strip
+    }
+  });
+</script>
+{% endblock %}

@@ -1,569 +1,218 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FinishLine — Release Verification &amp; Crash Recovery</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #0d1117;
-      --surface: #151b23;
-      --surface-subtle: #1b222c;
-      --border: #2a323d;
-      --text: #e6edf3;
-      --muted: #8b949e;
-      --accent: #2f81f7;
-      --ok: #2ea043;
-      --warn: #d29922;
-      --danger: #f85149;
-      --radius: 8px;
-    }
+{% extends "base.html" %}
 
-    * { box-sizing: border-box; }
+{% block title %}Workspace — FinishLine{% endblock %}
 
-    ::selection {
-      background: rgba(47, 129, 247, 0.35);
-      color: var(--text);
-    }
-
-    :focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
-    }
-
-    ::-webkit-scrollbar { width: 8px; height: 8px; }
-    ::-webkit-scrollbar-track { background: var(--bg); }
-    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-      font-size: 14px;
-      line-height: 1.5;
-      font-variant-numeric: tabular-nums;
-    }
-
-    a { color: #58a6ff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 12px;
-      color: var(--text);
-    }
-
-    .container {
-      max-width: 1140px;
-      margin: 0 auto;
-      padding: 20px 24px 48px;
-    }
-
-    /* Header */
-    .topbar {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      padding-bottom: 18px;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .title-group {
-      display: flex;
-      align-items: baseline;
-      gap: 14px;
-      flex-wrap: wrap;
-    }
-
-    .title-group h1 {
-      margin: 0;
-      font-size: 20px;
-      font-weight: 600;
-      letter-spacing: -0.02em;
-    }
-
-    .repo-meta {
-      color: var(--muted);
-      font-size: 13px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-
-    /* Controls */
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      height: 34px;
-      padding: 0 12px;
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-      background: var(--surface);
-      color: var(--text);
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background 0.12s ease, border-color 0.12s ease;
-    }
-
-    .btn:hover { background: var(--surface-subtle); border-color: #3d4756; }
-    .btn-primary { background: #1d4ed8; border-color: #2563eb; color: #ffffff; }
-    .btn-primary:hover { background: #1e40af; }
-    .btn-ok { background: #15803d; border-color: #16a34a; color: #ffffff; }
-    .btn-ok:hover { background: #166534; }
-    .btn-danger { background: transparent; border-color: rgba(248, 81, 73, 0.55); color: #ff7b72; }
-    .btn-danger:hover { background: rgba(248, 81, 73, 0.12); }
-    .btn-ghost { background: transparent; border-color: transparent; color: var(--muted); padding: 0 8px; }
-    .btn-ghost:hover { color: var(--text); background: var(--surface); }
-    .btn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
-
-    .segmented {
-      display: inline-flex;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--surface);
-      padding: 2px;
-      gap: 2px;
-    }
-
-    .segmented button {
-      border: 0;
-      background: transparent;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 500;
-      padding: 5px 10px;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-
-    .segmented button:hover { color: var(--text); }
-    .segmented button.active {
-      background: var(--surface-subtle);
-      color: var(--text);
-      box-shadow: inset 0 0 0 1px #3d4756;
-    }
-
-    select, input[type="text"] {
-      height: 34px;
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 0 10px;
-      font-size: 13px;
-    }
-
-    /* Launch Toolbar */
-    .launch-bar {
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      margin-top: 20px;
-      flex-wrap: wrap;
-    }
-
-    .launch-bar select {
-      flex: 1;
-      min-width: 260px;
-    }
-
-    /* Two-column Workspace */
-    .workspace {
-      display: grid;
-      grid-template-columns: minmax(0, 1.55fr) minmax(290px, 1fr);
-      gap: 24px;
-      margin-top: 22px;
-      align-items: start;
-    }
-
-    @media (max-width: 900px) {
-      .workspace { grid-template-columns: 1fr; }
-    }
-
-    .surface {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 18px;
-    }
-
-    .section-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 14px;
-      flex-wrap: wrap;
-    }
-
-    .section-head h2 {
-      margin: 0;
-      font-size: 15px;
-      font-weight: 600;
-    }
-
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-      text-transform: capitalize;
-    }
-
-    .badge-ok { background: rgba(46, 160, 67, 0.16); color: #7ee787; }
-    .badge-warn { background: rgba(210, 153, 34, 0.18); color: #e3b341; }
-    .badge-danger { background: rgba(248, 81, 73, 0.16); color: #ff7b72; }
-    .badge-info { background: rgba(47, 129, 247, 0.16); color: #79c0ff; }
-    .badge-neutral { background: var(--surface-subtle); color: var(--muted); }
-
-    /* Run Action Bar */
-    .run-controls {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      padding: 10px 12px;
-      border-radius: var(--radius);
-      background: var(--bg);
-      border: 1px solid var(--border);
-      margin-bottom: 14px;
-    }
-
-    .run-meta {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
-      font-size: 12px;
-      color: var(--muted);
-    }
-
-    .action-group {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    /* Voice Approval Banner (only visible when gate is open) */
-    .approval-banner {
-      display: none;
-      flex-direction: column;
-      gap: 10px;
-      padding: 12px;
-      border-radius: var(--radius);
-      border: 1px solid rgba(210, 153, 34, 0.5);
-      background: rgba(210, 153, 34, 0.08);
-      margin-bottom: 14px;
-    }
-
-    .approval-banner.visible { display: flex; }
-
-    /* Step List (flat hairline rows, no nested boxes) */
-    .steps {
-      display: flex;
-      flex-direction: column;
-    }
-
-    .step-row {
-      padding: 12px 2px;
-      border-top: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .step-row:first-child { border-top: 0; padding-top: 4px; }
-
-    .step-top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-    }
-
-    .step-title { font-weight: 500; font-size: 14px; }
-    .step-detail { color: var(--muted); font-size: 12.5px; }
-
-    /* Live Feed */
-    .feed {
-      display: flex;
-      flex-direction: column;
-      max-height: 380px;
-      overflow-y: auto;
-    }
-
-    .feed-row {
-      padding: 9px 0;
-      border-top: 1px solid var(--border);
-      font-size: 12.5px;
-    }
-
-    .feed-row:first-child { border-top: 0; padding-top: 0; }
-    .feed-type { font-weight: 600; color: var(--text); }
-    .feed-msg { color: var(--muted); margin-top: 2px; }
-
-    /* Progressive Disclosure */
-    details.advanced {
-      margin-top: 16px;
-      border-top: 1px solid var(--border);
-      padding-top: 12px;
-    }
-
-    details.advanced summary {
-      cursor: pointer;
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 500;
-      user-select: none;
-    }
-
-    details.advanced summary:hover { color: var(--text); }
-
-    .playbook-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 8px 0;
-      border-top: 1px solid var(--border);
-      font-size: 12px;
-    }
-
-    .playbook-row:first-of-type { border-top: 0; margin-top: 8px; }
-    .empty-state { color: var(--muted); font-size: 13px; padding: 18px 0; }
-    .hidden { display: none !important; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <header class="topbar">
-      <div class="title-group">
-        <h1>FinishLine</h1>
-        <div class="repo-meta">
-          <code id="sandbox-repo">{{ sandbox_repo }}</code>
-          {% if sandbox_repo.startswith('dry-run/') %}
-            <button class="btn btn-sm" onclick="bootstrapSandbox()">Connect GitHub Sandbox</button>
-          {% endif %}
-        </div>
-      </div>
-
-      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-        <span style="font-size: 12px; color: var(--muted);">Target Chaos</span>
-        <div class="segmented" role="group" aria-label="Target Chaos Mode">
-          {% set labels = {
-            'normal': 'Normal',
-            'silent_drop_202': 'Silent 202',
-            'drift_v2': 'Drift v2',
-            'require_approval_gate': 'Approval Gate'
-          } %}
-          {% for mode in chaos_modes %}
-            <button
-              class="{% if target.get('chaos_mode') == mode %}active{% endif %}"
-              data-mode="{{ mode }}"
-              onclick="setChaosMode('{{ mode }}')"
-            >{{ labels.get(mode, mode) }}</button>
-          {% endfor %}
-        </div>
-        <button class="btn btn-ghost btn-sm" onclick="resetTarget()">Reset</button>
-      </div>
-    </header>
-
-    <section class="launch-bar" aria-label="Launch Release Closer">
-      <select id="issue-select" aria-label="GitHub Issue">
-        {% for iss in issues %}
-          <option
-            value="{{ iss.number }}"
-            data-title="{{ iss.title }}"
-            data-body="{{ iss.body }}"
-          >#{{ iss.number }} · {{ iss.title }}</option>
-        {% endfor %}
-      </select>
-      <button class="btn btn-primary" onclick="startRun()">Run Release Closer</button>
-      <select id="run-selector" aria-label="Active Run" style="max-width: 240px;" onchange="switchRun(this.value)">
-        {% if not runs %}
-          <option value="">No runs yet</option>
-        {% endif %}
-        {% for r in runs %}
-          <option value="{{ r.run_id }}" {% if r.run_id == initial_run_id %}selected{% endif %}>
-            {{ r.run_id }} · #{{ r.issue_number }} ({{ r.status }})
-          </option>
-        {% endfor %}
-      </select>
-    </section>
-
-    <main class="workspace">
-      <section class="surface">
-        <div class="section-head">
-          <h2>Verification Pipeline</h2>
-          <span id="run-status-badge" class="badge badge-neutral">No Run Selected</span>
-        </div>
-
-        <div class="run-controls">
-          <div class="run-meta">
-            <span>PID: <code id="kpi-pid">—</code></span>
-            <span>Deployments: <strong id="kpi-deps">0</strong></span>
-            <span id="run-pr-link"></span>
-          </div>
-          <div class="action-group">
-            <button id="btn-kill" class="btn btn-danger btn-sm hidden" onclick="killWorker()">SIGKILL Worker</button>
-            <button id="btn-resume" class="btn btn-ok btn-sm hidden" onclick="resumeWorker()">Resume Fresh PID</button>
-            <button id="btn-rollback" class="btn btn-sm hidden" onclick="triggerRollback()">Rollback</button>
-          </div>
-        </div>
-
-        <div id="approval-banner" class="approval-banner">
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
-            <strong style="font-size: 13px;">Human Approval Required</strong>
-            <button class="btn btn-sm" id="record-btn" onclick="toggleRecording()">Speak Decision</button>
-          </div>
-          <div id="audio-container" style="font-size: 12.5px; color: var(--muted);"></div>
-          <audio id="briefing-audio" controls style="width: 100%; display: none;"></audio>
-          <div style="display: flex; gap: 8px;">
-            <input id="approval-note" type="text" placeholder="Approval note (e.g. Canary green)" style="flex: 1;" />
-            <button class="btn btn-ok btn-sm" onclick="approveText()">Approve &amp; Continue</button>
-          </div>
-          <div id="record-status" style="font-size: 12px; color: var(--muted);"></div>
-        </div>
-
-        <div id="step-list" class="steps">
-          <div class="empty-state">Select a GitHub issue above and click <strong>Run Release Closer</strong>.</div>
-        </div>
-      </section>
-
-      <aside class="surface">
-        <div class="section-head">
-          <h2>Live Events</h2>
-          <span id="sse-badge" style="font-size: 12px; color: var(--muted);">Idle</span>
-        </div>
-        <div id="event-log" class="feed">
-          <div class="empty-state">Events appear here in real time via MongoDB Atlas Change Streams.</div>
-        </div>
-
-        <details class="advanced">
-          <summary>Advanced: Step Pacing &amp; Vector Playbooks ({{ memories|length }})</summary>
-          <div style="display: flex; align-items: center; gap: 8px; margin-top: 12px;">
-            <label for="step-delay" style="font-size: 12px; color: var(--muted);">Step delay (s):</label>
-            <input id="step-delay" type="text" value="0.8" style="width: 68px; height: 28px;" />
-            <button class="btn btn-sm" onclick="bootstrapSandbox()">Re-seed Sandbox</button>
-          </div>
-          <div id="memory-list" style="margin-top: 8px;">
-            {% for m in memories %}
-              <div class="playbook-row">
-                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.title }}</span>
-                {% if m.status == 'active' %}
-                  <button class="btn btn-sm" onclick="toggleMemory('{{ m.memory_id }}', false)">Invalidate</button>
-                {% else %}
-                  <button class="btn btn-sm btn-ok" onclick="toggleMemory('{{ m.memory_id }}', true)">Restore</button>
-                {% endif %}
-              </div>
-            {% endfor %}
-          </div>
-        </details>
-      </aside>
-    </main>
+{% block content %}
+<div class="page-header" style="margin-bottom: 8px;">
+  <div>
+    <h1 class="page-title">Release Closer Workspace</h1>
+    <div class="page-subtitle">Select a GitHub issue or free-form release goal, run autonomous verification, and observe step checkpoints.</div>
   </div>
+  <div style="display: flex; align-items: center; gap: 8px;">
+    {% if sandbox_repo.startswith('dry-run/') %}
+      <button class="btn btn-sm" onclick="bootstrapSandbox()">Connect GitHub Sandbox</button>
+    {% endif %}
+  </div>
+</div>
 
-  <script>
-    let currentRunId = "{{ initial_run_id }}";
-    let eventSource = null;
-    let mediaRecorder = null;
-    let audioChunks = [];
+<section class="launch-bar" aria-label="Launch Release Closer">
+  <select id="issue-select" aria-label="GitHub Issue">
+    {% for iss in issues %}
+      <option
+        value="{{ iss.number }}"
+        data-title="{{ iss.title }}"
+        data-body="{{ iss.body }}"
+      >#{{ iss.number }} · {{ iss.title }}</option>
+    {% endfor %}
+  </select>
+  <button class="btn btn-primary" onclick="startRun()">Run Release Closer</button>
+  <select id="run-selector" aria-label="Active Run" style="max-width: 240px;" onchange="switchRun(this.value)">
+    {% if not runs %}
+      <option value="">No runs yet</option>
+    {% endif %}
+    {% for r in runs %}
+      <option value="{{ r.run_id }}" {% if r.run_id == initial_run_id %}selected{% endif %}>
+        {{ r.run_id }} · #{{ r.issue_number }} ({{ r.status }})
+      </option>
+    {% endfor %}
+  </select>
+</section>
 
-    function badgeClass(status) {
-      const s = String(status || "").toLowerCase();
-      if (s === "verified_took_effect" || s === "completed") return "badge-ok";
-      if (s === "sent_unverified" || s === "awaiting_approval") return "badge-warn";
-      if (s === "crashed" || s === "rolled_back" || s === "failed" || s === "blocked_policy") return "badge-danger";
-      if (s === "running" || s === "drifted" || s === "adapted") return "badge-info";
-      return "badge-neutral";
+<div class="workspace">
+  <section class="surface">
+    <div class="section-head">
+      <div>
+        <h2>Verification Pipeline</h2>
+        <div class="section-head-desc">Autonomous multi-step release verification workflow.</div>
+      </div>
+      <span id="run-status-badge" class="badge badge-neutral">No Run Selected</span>
+    </div>
+
+    <div class="run-controls">
+      <div class="run-meta">
+        <span>PID: <code id="kpi-pid" class="mono">—</code></span>
+        <span>Deployments: <strong id="kpi-deps">0</strong></span>
+        <span id="run-pr-link"></span>
+      </div>
+      <div class="action-group">
+        <button id="btn-kill" class="btn btn-danger btn-sm hidden" onclick="killWorker()">SIGKILL Worker</button>
+        <button id="btn-resume" class="btn btn-ok btn-sm hidden" onclick="resumeWorker()">Resume Fresh PID</button>
+        <button id="btn-rollback" class="btn btn-sm hidden" onclick="triggerRollback()">Rollback</button>
+      </div>
+    </div>
+
+    <div id="approval-banner" class="approval-banner">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+        <strong style="font-size: 13px;">Human Approval Required</strong>
+        <button class="btn btn-sm" id="record-btn" onclick="toggleRecording()">Speak Decision</button>
+      </div>
+      <div id="audio-container" style="font-size: 12.5px; color: var(--muted);"></div>
+      <audio id="briefing-audio" controls style="width: 100%; display: none;"></audio>
+      <div style="display: flex; gap: 8px;">
+        <input id="approval-note" type="text" placeholder="Approval note (e.g. Canary green)" style="flex: 1;" />
+        <button class="btn btn-ok btn-sm" onclick="approveText()">Approve &amp; Continue</button>
+      </div>
+      <div id="record-status" style="font-size: 12px; color: var(--muted);"></div>
+    </div>
+
+    <div id="step-list" class="steps">
+      <div class="empty-state">Select a GitHub issue above and click <strong>Run Release Closer</strong>.</div>
+    </div>
+  </section>
+
+  <aside class="surface">
+    <div class="section-head">
+      <div>
+        <h2>Live Events</h2>
+        <div class="section-head-desc">Real-time MongoDB Atlas Change Stream events.</div>
+      </div>
+      <span id="sse-badge" class="badge badge-neutral">Idle</span>
+    </div>
+    <div id="event-log" class="feed">
+      <div class="empty-state">Events appear here in real time via MongoDB Atlas Change Streams.</div>
+    </div>
+
+    <details class="advanced" style="margin-top: 16px; border-top: 1px solid var(--border-subtle); padding-top: 12px;">
+      <summary style="cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 500;">Advanced: Step Pacing &amp; Vector Playbooks ({{ memories|length }})</summary>
+      <div style="display: flex; align-items: center; gap: 8px; margin-top: 12px;">
+        <label for="step-delay" style="font-size: 12px; color: var(--muted);">Step delay (s):</label>
+        <input id="step-delay" type="text" value="0.5" style="width: 68px; height: 28px;" />
+        <button class="btn btn-sm" onclick="bootstrapSandbox()">Re-seed Sandbox</button>
+      </div>
+      <div id="memory-list" style="margin-top: 8px;">
+        {% for m in memories %}
+          <div class="playbook-row">
+            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.title }}</span>
+            {% if m.status == 'active' %}
+              <button class="btn btn-sm btn-danger" onclick="toggleMemory('{{ m.memory_id }}', false)">Invalidate</button>
+            {% else %}
+              <button class="btn btn-sm btn-ok" onclick="toggleMemory('{{ m.memory_id }}', true)">Restore</button>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    </details>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let currentRunId = "{{ initial_run_id }}";
+  let eventSource = null;
+  let mediaRecorder = null;
+  let audioChunks = [];
+
+  function badgeClass(status) {
+    return FinishLineLiveRun.badgeClass(status);
+  }
+
+  function formatStatus(status) {
+    return FinishLineLiveRun.formatStatus(status);
+  }
+
+  function escapeHtml(text) {
+    return FinishLineLiveRun.escapeHtml(text);
+  }
+
+  function summarizeStep(cp) {
+    if (cp.adaptation_used) return escapeHtml(cp.adaptation_used);
+    const ext = cp.external_ref || "";
+    if (cp.probe_result && cp.probe_result.active !== undefined) {
+      return cp.probe_result.active
+        ? `Verified active (${cp.probe_result.api_version || "v1"}): ${escapeHtml(ext)}`
+        : `Probe failed (active=false, attempts: ${cp.attempts})`;
     }
-
-    function formatStatus(status) {
-      return String(status || "pending").replaceAll("_", " ");
+    if (ext.startsWith("http")) {
+      return `<a href="${escapeHtml(ext)}" target="_blank">${escapeHtml(ext)}</a>`;
     }
+    if (cp.status === "rolled_back") return "Compensating rollback completed.";
+    if (cp.took_effect) return `Verified (${cp.attempts} attempt${cp.attempts === 1 ? "" : "s"}).`;
+    return cp.error_message ? escapeHtml(cp.error_message) : "Waiting…";
+  }
 
-    function escapeHtml(text) {
-      return String(text || "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;");
-    }
+  function renderSnapshot(snap) {
+    if (!snap || !snap.run) return;
+    const run = snap.run;
+    const checkpoints = snap.checkpoints || [];
+    const events = snap.events || [];
+    const target = snap.target || {};
 
-    function summarizeStep(cp) {
-      if (cp.adaptation_used) return cp.adaptation_used;
-      const ext = cp.external_ref || "";
-      if (cp.probe_result && cp.probe_result.active !== undefined) {
-        return cp.probe_result.active
-          ? `Verified active (${cp.probe_result.api_version || "v1"}): ${ext}`
-          : `Probe failed (active=false, attempts: ${cp.attempts})`;
-      }
-      if (ext.startsWith("http")) {
-        return `<a href="${escapeHtml(ext)}" target="_blank">${escapeHtml(ext)}</a>`;
-      }
-      if (cp.status === "rolled_back") return "Compensating rollback completed.";
-      if (cp.took_effect) return `Verified (${cp.attempts} attempt${cp.attempts === 1 ? "" : "s"}).`;
-      return cp.error_message ? escapeHtml(cp.error_message) : "Waiting…";
-    }
+    // Keep Live Run Strip updated
+    FinishLineLiveRun.updateLiveRunStrip(snap);
 
-    function renderSnapshot(snap) {
-      if (!snap || !snap.run) return;
-      const run = snap.run;
-      const checkpoints = snap.checkpoints || [];
-      const events = snap.events || [];
-      const target = snap.target || {};
-
-      const statusBadge = document.getElementById("run-status-badge");
+    const statusBadge = document.getElementById("run-status-badge");
+    if (statusBadge) {
       statusBadge.textContent = formatStatus(run.status);
       statusBadge.className = "badge " + badgeClass(run.status);
+    }
 
-      document.getElementById("kpi-pid").textContent = run.worker_pid || "stopped";
-      document.getElementById("kpi-deps").textContent = String((target.deployments || []).length);
+    const pidEl = document.getElementById("kpi-pid");
+    if (pidEl) pidEl.textContent = run.worker_pid || (run.step_paused ? "paused" : "stopped");
 
-      const prSpan = document.getElementById("run-pr-link");
+    const depEl = document.getElementById("kpi-deps");
+    if (depEl) depEl.textContent = String((target.deployments || []).length);
+
+    const prSpan = document.getElementById("run-pr-link");
+    if (prSpan) {
       prSpan.innerHTML = run.pr_url
-        ? `<a href="${escapeHtml(run.pr_url)}" target="_blank">PR ↗</a>`
+        ? `<a href="${escapeHtml(run.pr_url)}" target="_blank" class="nav-ext">PR ↗</a>`
         : "";
+    }
 
-      document.querySelectorAll(".segmented button").forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.mode === target.chaos_mode);
-      });
+    const status = String(run.status || "").toLowerCase();
+    const btnKill = document.getElementById("btn-kill");
+    const btnResume = document.getElementById("btn-resume");
+    const btnRollback = document.getElementById("btn-rollback");
+    if (btnKill) btnKill.classList.toggle("hidden", !(status === "running" && run.worker_pid));
+    if (btnResume) btnResume.classList.toggle("hidden", !(status === "crashed" || (status === "running" && !run.worker_pid) || run.step_paused));
+    if (btnRollback) btnRollback.classList.toggle("hidden", !["running", "crashed", "awaiting_approval", "completed"].includes(status));
 
-      const status = String(run.status || "").toLowerCase();
-      document.getElementById("btn-kill").classList.toggle("hidden", !(status === "running" && run.worker_pid));
-      document.getElementById("btn-resume").classList.toggle("hidden", !(status === "crashed" || (status === "running" && !run.worker_pid)));
-      document.getElementById("btn-rollback").classList.toggle("hidden", !["running", "crashed", "awaiting_approval", "completed"].includes(status));
-
-      const approvalBanner = document.getElementById("approval-banner");
-      const audioEvent = events.find((e) => e.details && e.details.audio_url);
-      const audioEl = document.getElementById("briefing-audio");
-      const audioContainer = document.getElementById("audio-container");
+    const approvalBanner = document.getElementById("approval-banner");
+    const audioEvent = events.find((e) => e.details && e.details.audio_url);
+    const audioEl = document.getElementById("briefing-audio");
+    const audioContainer = document.getElementById("audio-container");
+    if (approvalBanner) {
       if (status === "awaiting_approval") {
         approvalBanner.classList.add("visible");
-        audioContainer.textContent = run.voice_briefing_text || "Confirm adaptation to continue deployment.";
-        if (audioEvent && audioEvent.details.audio_url) {
-          if (audioEl.getAttribute("src") !== audioEvent.details.audio_url) {
-            audioEl.setAttribute("src", audioEvent.details.audio_url);
+        if (audioContainer) audioContainer.textContent = run.voice_briefing_text || "Confirm adaptation to continue deployment.";
+        if (audioEl) {
+          if (audioEvent && audioEvent.details.audio_url) {
+            if (audioEl.getAttribute("src") !== audioEvent.details.audio_url) {
+              audioEl.setAttribute("src", audioEvent.details.audio_url);
+            }
+            audioEl.style.display = "block";
+          } else {
+            audioEl.style.display = "none";
           }
-          audioEl.style.display = "block";
-        } else {
-          audioEl.style.display = "none";
         }
       } else {
         approvalBanner.classList.remove("visible");
       }
+    }
 
+    const stepList = document.getElementById("step-list");
+    if (stepList) {
       const stepHtml = checkpoints.map((cp) => `
         <div class="step-row">
           <div class="step-top">
@@ -573,161 +222,153 @@
           <div class="step-detail">${summarizeStep(cp)}</div>
         </div>
       `).join("");
-      document.getElementById("step-list").innerHTML = stepHtml || '<div class="empty-state">Starting worker…</div>';
+      stepList.innerHTML = stepHtml || '<div class="empty-state">Starting worker…</div>';
+    }
 
+    const evLog = document.getElementById("event-log");
+    if (evLog) {
       const evHtml = events.slice(-16).map((ev) => `
         <div class="feed-row">
           <div class="feed-type">${escapeHtml(ev.event_type)}</div>
           <div class="feed-msg">${escapeHtml(ev.message)}</div>
         </div>
       `).join("");
-      document.getElementById("event-log").innerHTML = evHtml || '<div class="empty-state">No events yet.</div>';
+      evLog.innerHTML = evHtml || '<div class="empty-state">No events yet.</div>';
+    }
+  }
+
+  function connectStream(runId) {
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+    if (!runId) return;
+    currentRunId = runId;
+    const sseBadge = document.getElementById("sse-badge");
+    if (sseBadge) {
+      sseBadge.textContent = "Live";
+      sseBadge.className = "badge badge-ok";
     }
 
-    function connectStream(runId) {
-      if (eventSource) {
-        eventSource.close();
-        eventSource = null;
-      }
-      if (!runId) return;
-      currentRunId = runId;
-      document.getElementById("sse-badge").textContent = "Live";
-      eventSource = new EventSource(`/runs/${runId}/stream`);
-      eventSource.addEventListener("snapshot", (ev) => {
-        renderSnapshot(JSON.parse(ev.data));
-      });
-      eventSource.onerror = () => {
-        document.getElementById("sse-badge").textContent = "Reconnecting…";
-      };
-    }
+    eventSource = FinishLineLiveRun.connectLiveRun({
+      runId: runId,
+      onSnapshot: renderSnapshot,
+    });
+  }
 
-    async function switchRun(runId) {
-      if (!runId) return;
-      connectStream(runId);
-      const resp = await fetch(`/api/runs/${runId}`);
-      if (resp.ok) renderSnapshot(await resp.json());
-    }
+  async function switchRun(runId) {
+    if (!runId) return;
+    connectStream(runId);
+    const resp = await fetch(`/api/runs/${runId}`);
+    if (resp.ok) renderSnapshot(await resp.json());
+  }
 
-    async function setChaosMode(mode) {
-      await fetch(`/chaos/${mode}`, { method: "POST" });
-      document.querySelectorAll(".segmented button").forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.mode === mode);
-      });
-    }
+  async function bootstrapSandbox() {
+    await fetch("/sandbox/bootstrap", { method: "POST" });
+    window.location.reload();
+  }
 
-    async function resetTarget() {
-      await fetch("/target/reset", { method: "POST" });
-      await setChaosMode("normal");
-      if (currentRunId) switchRun(currentRunId);
+  async function startRun() {
+    const selIssue = document.getElementById("issue-select");
+    const opt = selIssue.options[selIssue.selectedIndex];
+    const stepDelay = parseFloat(document.getElementById("step-delay").value || "0.5");
+    const resp = await fetch("/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        issue_number: opt ? Number(opt.value) : 1,
+        issue_title: opt ? opt.dataset.title : "Fix webhook rate limit",
+        issue_body: opt ? opt.dataset.body : "",
+        step_delay: isNaN(stepDelay) ? 0.5 : stepDelay,
+        auto_spawn: true,
+      }),
+    });
+    const data = await resp.json();
+    const sel = document.getElementById("run-selector");
+    if (sel.options.length === 1 && sel.options[0].value === "") {
+      sel.innerHTML = "";
     }
+    const runOpt = document.createElement("option");
+    runOpt.value = data.run_id;
+    runOpt.textContent = `${data.run_id} · #${opt ? opt.value : 1} (running)`;
+    sel.prepend(runOpt);
+    sel.value = data.run_id;
+    connectStream(data.run_id);
+  }
 
-    async function bootstrapSandbox() {
-      await fetch("/sandbox/bootstrap", { method: "POST" });
-      window.location.reload();
+  async function killWorker() {
+    if (!currentRunId) return;
+    await FinishLineLiveRun.killLiveRun(currentRunId);
+  }
+
+  async function resumeWorker() {
+    if (!currentRunId) return;
+    const stepDelay = parseFloat(document.getElementById("step-delay").value || "0.5");
+    await fetch(`/runs/${currentRunId}/resume?step_delay=${isNaN(stepDelay) ? 0.5 : stepDelay}`, { method: "POST" });
+  }
+
+  async function triggerRollback() {
+    if (!currentRunId) return;
+    await fetch(`/runs/${currentRunId}/rollback`, { method: "POST" });
+  }
+
+  async function approveText() {
+    if (!currentRunId) return;
+    const note = document.getElementById("approval-note").value || "Approved";
+    await fetch(`/runs/${currentRunId}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note }),
+    });
+  }
+
+  async function toggleRecording() {
+    if (!currentRunId) return;
+    const status = document.getElementById("record-status");
+    const btn = document.getElementById("record-btn");
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      mediaRecorder.stop();
+      btn.textContent = "Speak Decision";
+      status.textContent = "Transcribing via Scribe v2…";
+      return;
     }
-
-    async function startRun() {
-      const selIssue = document.getElementById("issue-select");
-      const opt = selIssue.options[selIssue.selectedIndex];
-      const stepDelay = parseFloat(document.getElementById("step-delay").value || "0.8");
-      const resp = await fetch("/runs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          issue_number: opt ? Number(opt.value) : 1,
-          issue_title: opt ? opt.dataset.title : "Fix webhook rate limit",
-          issue_body: opt ? opt.dataset.body : "",
-          step_delay: isNaN(stepDelay) ? 0.8 : stepDelay,
-          auto_spawn: true,
-        }),
-      });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+    mediaRecorder.onstop = async () => {
+      const blob = new Blob(audioChunks, { type: "audio/webm" });
+      const form = new FormData();
+      form.append("audio", blob, "operator.webm");
+      const resp = await fetch(`/runs/${currentRunId}/approve`, { method: "POST", body: form });
       const data = await resp.json();
-      const sel = document.getElementById("run-selector");
-      if (sel.options.length === 1 && sel.options[0].value === "") {
-        sel.innerHTML = "";
-      }
-      const runOpt = document.createElement("option");
-      runOpt.value = data.run_id;
-      runOpt.textContent = `${data.run_id} · #${opt ? opt.value : 1} (running)`;
-      sel.prepend(runOpt);
-      sel.value = data.run_id;
-      connectStream(data.run_id);
-    }
+      status.textContent = `Heard: "${data.transcript || ""}"`;
+      stream.getTracks().forEach((t) => t.stop());
+    };
+    mediaRecorder.start();
+    btn.textContent = "Stop & Send";
+    status.textContent = "Recording…";
+  }
 
-    async function killWorker() {
-      if (!currentRunId) return;
-      await fetch(`/runs/${currentRunId}/kill`, { method: "POST" });
-    }
+  async function toggleMemory(memoryId, restore) {
+    await fetch(`/memories/${memoryId}/invalidate?restore=${restore}`, { method: "POST" });
+    const resp = await fetch("/api/memories");
+    const data = await resp.json();
+    document.getElementById("memory-list").innerHTML = (data.memories || []).map((m) => `
+      <div class="playbook-row">
+        <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(m.title)}</span>
+        ${m.status === "active"
+          ? `<button class="btn btn-sm btn-danger" onclick="toggleMemory('${escapeHtml(m.memory_id)}', false)">Invalidate</button>`
+          : `<button class="btn btn-sm btn-ok" onclick="toggleMemory('${escapeHtml(m.memory_id)}', true)">Restore</button>`
+        }
+      </div>
+    `).join("");
+  }
 
-    async function resumeWorker() {
-      if (!currentRunId) return;
-      const stepDelay = parseFloat(document.getElementById("step-delay").value || "0.8");
-      await fetch(`/runs/${currentRunId}/resume?step_delay=${isNaN(stepDelay) ? 0.8 : stepDelay}`, { method: "POST" });
-    }
-
-    async function triggerRollback() {
-      if (!currentRunId) return;
-      await fetch(`/runs/${currentRunId}/rollback`, { method: "POST" });
-    }
-
-    async function approveText() {
-      if (!currentRunId) return;
-      const note = document.getElementById("approval-note").value || "Approved";
-      await fetch(`/runs/${currentRunId}/approve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note }),
-      });
-    }
-
-    async function toggleRecording() {
-      if (!currentRunId) return;
-      const status = document.getElementById("record-status");
-      const btn = document.getElementById("record-btn");
-      if (mediaRecorder && mediaRecorder.state === "recording") {
-        mediaRecorder.stop();
-        btn.textContent = "Speak Decision";
-        status.textContent = "Transcribing via Scribe v2…";
-        return;
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioChunks = [];
-      mediaRecorder = new MediaRecorder(stream);
-      mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
-      mediaRecorder.onstop = async () => {
-        const blob = new Blob(audioChunks, { type: "audio/webm" });
-        const form = new FormData();
-        form.append("audio", blob, "operator.webm");
-        const resp = await fetch(`/runs/${currentRunId}/approve`, { method: "POST", body: form });
-        const data = await resp.json();
-        status.textContent = `Heard: "${data.transcript || ""}"`;
-        stream.getTracks().forEach((t) => t.stop());
-      };
-      mediaRecorder.start();
-      btn.textContent = "Stop & Send";
-      status.textContent = "Recording…";
-    }
-
-    async function toggleMemory(memoryId, restore) {
-      await fetch(`/memories/${memoryId}/invalidate?restore=${restore}`, { method: "POST" });
-      const resp = await fetch("/api/memories");
-      const data = await resp.json();
-      document.getElementById("memory-list").innerHTML = (data.memories || []).map((m) => `
-        <div class="playbook-row">
-          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(m.title)}</span>
-          ${m.status === "active"
-            ? `<button class="btn btn-sm" onclick="toggleMemory('${escapeHtml(m.memory_id)}', false)">Invalidate</button>`
-            : `<button class="btn btn-sm btn-ok" onclick="toggleMemory('${escapeHtml(m.memory_id)}', true)">Restore</button>`
-          }
-        </div>
-      `).join("");
-    }
-
-    if (currentRunId) {
-      const initial = {{ initial_snapshot | tojson | safe }};
-      if (initial) renderSnapshot(initial);
-      connectStream(currentRunId);
-    }
-  </script>
-</body>
-</html>
+  if (currentRunId) {
+    const initial = {{ initial_snapshot | tojson | safe }};
+    if (initial) renderSnapshot(initial);
+    connectStream(currentRunId);
+  }
+</script>
+{% endblock %}

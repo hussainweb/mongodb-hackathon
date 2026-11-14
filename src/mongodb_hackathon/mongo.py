@@ -414,16 +414,17 @@ class MongoStore:
         )
         return int(res.modified_count)
 
-    async def watch_run_stream(self, run_id: str) -> AsyncIterator[dict[str, Any]]:
-        """Yield live Change Stream events for service_events and job_runs belonging to run_id."""
-        pipeline = [
-            {
-                "$match": {
-                    "operationType": {"$in": ["insert", "update", "replace"]},
-                    "fullDocument.run_id": run_id,
-                }
-            }
-        ]
+    async def watch_run_stream(
+        self, run_id: str = ""
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield live Change Stream events for service_events (belonging to run_id or all if empty)."""
+        match_spec: dict[str, Any] = {
+            "operationType": {"$in": ["insert", "update", "replace"]}
+        }
+        if run_id.strip():
+            match_spec["fullDocument.run_id"] = run_id.strip()
+
+        pipeline = [{"$match": match_spec}]
         async with await self.events.watch(
             pipeline, full_document="updateLookup"
         ) as stream:

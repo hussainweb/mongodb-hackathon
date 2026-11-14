@@ -7,11 +7,7 @@
   <div class="page-header" style="margin-bottom: 0; padding-bottom: 16px;">
     <div>
       <h1 class="page-title">Release Closer Workspace</h1>
-      <div class="page-subtitle">Autonomous release verification, MongoDB Atlas checkpoints, and crash recovery.</div>
-    </div>
-    <div style="display: flex; gap: 12px; align-items: center;">
-      <a href="/infra" class="nav-ext" target="_blank" title="Inspect target microservice &amp; chaos injection">Target Infra ↗</a>
-      <a href="/store" class="nav-ext" target="_blank" title="Inspect Atlas Vector Search experience &amp; events">Atlas Store ↗</a>
+      <div class="page-subtitle">Describe a release goal or issue below to run autonomous verification with MongoDB Atlas checkpoints.</div>
     </div>
   </div>
 
@@ -54,7 +50,7 @@
           <input type="checkbox" id="add-repo-create-sandbox" /> Ensure GitHub sandbox repo via API
         </label>
         <div style="display: flex; gap: 6px; align-items: center;">
-          <span id="add-repo-status" class="mono" style="font-size: 11.5px; color: var(--muted);"></span>
+          <span id="add-repo-status" class="mono" style="font-size: 12px; color: var(--muted);"></span>
           <button type="button" class="btn btn-sm btn-ghost" onclick="toggleAddRepo(false)">Cancel</button>
           <button type="button" class="btn btn-sm btn-primary" onclick="submitAddRepo()">Save Repo</button>
         </div>
@@ -62,17 +58,17 @@
     </div>
 
     <!-- Free-Form Prompt Textarea -->
-    <div class="prompt-wrap" style="margin-top: 14px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-        <label for="prompt-input" style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted);">Release Goal / Issue Prompt</label>
+    <div class="prompt-wrap" style="margin-top: 16px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; flex-wrap: wrap;">
+        <label for="prompt-input" style="font-size: 14px; font-weight: 600; color: var(--text);">Release Goal or Issue Prompt</label>
         <span id="prompt-indicator" class="prompt-indicator">Custom Release Goal (issue #0)</span>
       </div>
-      <textarea id="prompt-input" rows="3" placeholder="Describe the release issue, fix goal, or deployment requirements to verify..." oninput="onPromptInput()"></textarea>
+      <textarea id="prompt-input" rows="4" placeholder="Describe the release issue, fix goal, or deployment requirements to verify..." oninput="onPromptInput()"></textarea>
     </div>
 
     <!-- Editable Starter Example Chips -->
-    <div style="margin-top: 10px;">
-      <div style="font-size: 11.5px; color: var(--muted); margin-bottom: 6px; font-weight: 500;">Starter Examples (click to load &amp; edit freely):</div>
+    <div style="margin-top: 12px;">
+      <div style="font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500;">Starter Examples (click to load &amp; edit):</div>
       <div id="example-chips" class="chips-row">
         <!-- Rendered by JavaScript based on selected repo & issues -->
       </div>
@@ -81,7 +77,7 @@
     <!-- Pacing Segmented Control & Run Button -->
     <div class="pacing-bar">
       <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-        <span style="font-size: 12px; font-weight: 500; color: var(--muted);">Pacing:</span>
+        <span style="font-size: 12.5px; font-weight: 500; color: var(--muted);">Pacing:</span>
         <div class="segmented" id="pacing-control" role="radiogroup" aria-label="Execution Pacing">
           <button type="button" data-pacing="fast" onclick="setPacing('fast')">Fast 0.1s</button>
           <button type="button" class="active" data-pacing="demo" onclick="setPacing('demo')">Demo 0.5s</button>
@@ -89,7 +85,7 @@
           <button type="button" data-pacing="step" onclick="setPacing('step')">Step-by-Step</button>
         </div>
       </div>
-      <button id="btn-run-closer" class="btn btn-primary" onclick="startRun()">Run Release Closer</button>
+      <button id="btn-run-closer" class="btn btn-primary" style="padding: 10px 20px; font-size: 14px; font-weight: 600;" onclick="startRun()">Run Release Closer</button>
     </div>
   </section>
 
@@ -121,9 +117,6 @@
         <span>Deployments: <strong id="kpi-deps">0</strong></span>
         <span>Mode: <span id="run-mode-badge" class="badge badge-neutral">auto</span></span>
         <span id="run-pr-link"></span>
-        <span style="color: var(--border-strong);">|</span>
-        <a href="/infra" target="_blank" class="nav-ext" style="font-weight: 500;">Target Infra ↗</a>
-        <a href="/store" target="_blank" class="nav-ext" style="font-weight: 500;">Atlas Store ↗</a>
       </div>
       <div class="action-group">
         <button id="btn-kill" class="btn btn-danger btn-sm hidden" onclick="killWorker()">SIGKILL Worker</button>
@@ -157,20 +150,20 @@
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
           <div>
-            <label for="plan-patch-filename" style="font-size: 11.5px; color: var(--muted); display: block; margin-bottom: 2px;">Patch Filename</label>
+            <label for="plan-patch-filename" style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 2px;">Patch Filename</label>
             <input type="text" id="plan-patch-filename" style="width: 100%; font-family: var(--font-mono); font-size: 12px;" />
           </div>
           <div>
-            <label for="plan-rate-limit" style="font-size: 11.5px; color: var(--muted); display: block; margin-bottom: 2px;">Rate Limit (RPS)</label>
+            <label for="plan-rate-limit" style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 2px;">Rate Limit (RPS)</label>
             <input type="number" id="plan-rate-limit" style="width: 100%; font-size: 12px;" min="1" max="10000" />
           </div>
         </div>
         <div>
-          <label for="plan-pr-title" style="font-size: 11.5px; color: var(--muted); display: block; margin-bottom: 2px;">PR Title</label>
+          <label for="plan-pr-title" style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 2px;">PR Title</label>
           <input type="text" id="plan-pr-title" style="width: 100%; font-size: 12px;" />
         </div>
         <div>
-          <label for="plan-patch-content" style="font-size: 11.5px; color: var(--muted); display: block; margin-bottom: 2px;">Patch Content</label>
+          <label for="plan-patch-content" style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 2px;">Patch Content</label>
           <textarea id="plan-patch-content" rows="4" style="width: 100%; font-family: var(--font-mono); font-size: 12px; line-height: 1.4; resize: vertical;"></textarea>
         </div>
         <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;">
@@ -180,7 +173,7 @@
             <button type="button" id="btn-replan" class="btn btn-sm" onclick="replanStep1()">Re-plan Step 1</button>
           </div>
         </div>
-        <div id="plan-action-status" class="mono" style="font-size: 11.5px; color: var(--muted); min-height: 16px;"></div>
+        <div id="plan-action-status" class="mono" style="font-size: 12px; color: var(--muted); min-height: 16px;"></div>
       </div>
     </div>
 

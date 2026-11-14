@@ -24,6 +24,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from pymongo.errors import PyMongoError
 
+from mongodb_hackathon.agent import plan_release_fix
 from mongodb_hackathon.config import Settings, get_settings
 from mongodb_hackathon.embeddings import embed_text
 from mongodb_hackathon.github_adapter import GitHubSandboxAdapter
@@ -31,8 +32,10 @@ from mongodb_hackathon.models import (
     ChaosMode,
     DemoRepo,
     ExperienceMemory,
+    FixPlan,
     JobRun,
     RunStatus,
+    StepStatus,
     utc_now,
 )
 from mongodb_hackathon.mongo import MongoStore
@@ -75,8 +78,22 @@ class StartRunRequest(BaseModel):
     issue_number: int = 1
     issue_title: str = "Release blocker: sync service deployment configuration"
     issue_body: str = ""
-    step_delay: float = Field(default=0.8, ge=0.0, le=5.0)
+    step_delay: float = Field(default=0.5, ge=0.0, le=5.0)
+    step_mode: str = "auto"
     auto_spawn: bool = True
+
+
+class AdvanceRunRequest(BaseModel):
+    """Payload to advance a run paused at a checkpoint in step-by-step mode."""
+
+    step_delay: float = 0.5
+
+
+class UpdatePlanRequest(BaseModel):
+    """Payload to edit Step 1 FixPlan fields or re-prompt planner while paused after Step 1."""
+
+    fix_plan: dict[str, Any] | None = None
+    replan_prompt: str = ""
 
 
 class ApproveRunRequest(BaseModel):
@@ -109,7 +126,7 @@ class CreateMemoryRequest(BaseModel):
     status: Literal["active", "invalidated"] = "active"
 
 
-def _spawn_worker_process(run_id: str, step_delay: float = 0.8) -> int:
+def _spawn_worker_process(run_id: str, step_delay: float = 0.5) -> int:
     """Spawn a standalone OS worker process so SIGKILL crash tests are genuine."""
     cmd = [
         sys.executable,
@@ -379,6 +396,7 @@ async def create_and_start_run(request: Request, body: StartRunRequest) -> JSONR
         issue_body=issue_body,
         target_service_url=settings.target_service_url,
         status=RunStatus.RUNNING,
+        step_mode=body.step_mode,
     )
     await store.create_run(run)
     await store.emit_event(
@@ -453,7 +471,7 @@ async def kill_worker_pid(request: Request, run_id: str) -> JSONResponse:
 
 @app.post("/runs/{run_id}/resume")
 async def resume_worker(
-    request: Request, run_id: str, step_delay: float = 0.8
+    request: Request, run_id: str, step_delay: float = 0.5
 ) -> JSONResponse:
     """Spawn a fresh OS worker process that resumes strictly from Atlas checkpoints."""
     store, _, _, _ = _deps(request)
@@ -480,6 +498,174 @@ async def resume_worker(
             "run_id": run_id,
             "worker_pid": pid,
             "run": updated.model_dump(mode="json") if updated else None,
+        }
+    )
+
+
+@app.post("/runs/{run_id}/advance")
+async def advance_run(
+    request: Request,
+    run_id: str,
+    body: AdvanceRunRequest | None = None,
+) -> JSONResponse:
+    """Advance past a paused checkpoint in step-by-step mode; respawn worker if crashed."""
+    store, _, _, _ = _deps(request)
+    run = await store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    step_delay = 0.5
+    if body is not None:
+        step_delay = body.step_delay
+    elif request.headers.get("content-type", "").startswith("application/json"):
+        with suppress(Exception):
+            raw = await request.json()
+            if isinstance(raw, dict) and "step_delay" in raw:
+                step_delay = float(raw["step_delay"])
+
+    pid_alive = False
+    if run.worker_pid:
+        try:
+            os.kill(run.worker_pid, 0)
+            pid_alive = True
+        except OSError:
+            pid_alive = False
+
+    respawned_pid: int | None = None
+    if run.status == RunStatus.CRASHED and not pid_alive:
+        respawned_pid = _spawn_worker_process(run_id, step_delay=step_delay)
+
+    worker_pid = respawned_pid if respawned_pid else (run.worker_pid if pid_alive else None)
+    new_status = (
+        RunStatus.RUNNING.value
+        if (run.status == RunStatus.CRASHED or respawned_pid)
+        else run.status.value
+    )
+
+    await store.update_run(
+        run_id,
+        step_paused=False,
+        status=new_status,
+        worker_pid=worker_pid,
+    )
+    await store.emit_event(
+        run_id,
+        f"step_{max(run.current_step, 1)}",
+        "step_resumed",
+        f"Operator advanced step {run.current_step or 1}.",
+        {"resumed_from_step": run.current_step, "worker_pid": worker_pid},
+    )
+
+    updated = await store.get_run(run_id)
+    return JSONResponse(
+        {
+            "run_id": run_id,
+            "step_paused": False,
+            "worker_pid": worker_pid,
+            "respawned": respawned_pid is not None,
+            "run": updated.model_dump(mode="json") if updated else None,
+        }
+    )
+
+
+@app.post("/runs/{run_id}/plan")
+async def update_fix_plan(
+    request: Request,
+    run_id: str,
+    body: UpdatePlanRequest | None = None,
+) -> JSONResponse:
+    """Edit FixPlan fields or re-prompt Step 1 while paused after Step 1 before Step 2 mutates GitHub."""
+    store, _, _, settings = _deps(request)
+    run = await store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    cp1 = await store.get_checkpoint(run_id, "step_1_plan")
+    if not cp1 or cp1.status != StepStatus.VERIFIED_TOOK_EFFECT:
+        raise HTTPException(
+            status_code=400, detail="Step 1 plan checkpoint not found or not completed."
+        )
+
+    cp2 = await store.get_checkpoint(run_id, "step_2_github_patch")
+    if cp2 and cp2.status == StepStatus.VERIFIED_TOOK_EFFECT:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot edit FixPlan: Step 2 has already executed on GitHub.",
+        )
+
+    if not run.step_paused:
+        raise HTTPException(
+            status_code=400,
+            detail="Run must be paused after Step 1 to edit plan.",
+        )
+
+    req_body = body or UpdatePlanRequest()
+    if body is None and request.headers.get("content-type", "").startswith("application/json"):
+        with suppress(Exception):
+            raw = await request.json()
+            if isinstance(raw, dict):
+                req_body = UpdatePlanRequest.model_validate(raw)
+
+    plan_dict = dict(cp1.post_state.get("fix_plan", {}))
+
+    if req_body.replan_prompt and req_body.replan_prompt.strip():
+        replan_text = req_body.replan_prompt.strip()
+        replan_body = (
+            f"{run.issue_body}\n\nOperator instruction: {replan_text}"
+            if run.issue_body
+            else replan_text
+        )
+        memories = await store.search_experience(
+            f"{run.issue_title}\n{replan_body}",
+            kind=["repo_rule", "github_fix"],
+            source_repo=run.repo,
+            limit=3,
+        )
+        new_plan = await plan_release_fix(
+            issue_number=run.issue_number,
+            issue_title=run.issue_title,
+            issue_body=replan_body,
+            memories=memories,
+            settings=settings,
+        )
+        plan_dict = new_plan.model_dump(mode="json")
+        cp1.post_state["recalled_memories"] = [
+            m.get("title", "") for m in memories
+        ]
+
+    if req_body.fix_plan:
+        for k, v in req_body.fix_plan.items():
+            if (
+                k == "deployment_config"
+                and isinstance(v, dict)
+                and isinstance(plan_dict.get("deployment_config"), dict)
+            ):
+                plan_dict["deployment_config"].update(v)
+            else:
+                plan_dict[k] = v
+
+    try:
+        validated_plan = FixPlan.model_validate(plan_dict)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid FixPlan payload: {exc}"
+        ) from exc
+
+    cp1.post_state["fix_plan"] = validated_plan.model_dump(mode="json")
+    await store.upsert_checkpoint_atomic(cp1)
+    await store.emit_event(
+        run_id,
+        "step_1_plan",
+        "plan_updated",
+        "Operator updated Step 1 FixPlan before Step 2 execution.",
+        {"fix_plan": cp1.post_state["fix_plan"]},
+    )
+
+    return JSONResponse(
+        {
+            "run_id": run_id,
+            "fix_plan": cp1.post_state["fix_plan"],
+            "recalled_memories": cp1.post_state.get("recalled_memories", []),
         }
     )
 

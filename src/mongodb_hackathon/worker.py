@@ -127,6 +127,41 @@ async def _wait_for_operator_approval(
         await asyncio.sleep(poll_seconds)
 
 
+async def _pause_if_step_by_step(
+    store: MongoStore,
+    run_id: str,
+    completed_step_seq: int,
+) -> None:
+    """Pause between workflow checkpoints when step_mode is step_by_step until operator advances."""
+    run = await store.get_run(run_id)
+    if not run or run.step_mode != "step_by_step":
+        return
+
+    # If this step was already paused and operator already advanced, do not re-pause
+    if completed_step_seq <= run.paused_after_step and not run.step_paused:
+        return
+
+    if not run.step_paused or run.paused_after_step != completed_step_seq:
+        await store.update_run(
+            run_id,
+            step_paused=True,
+            paused_after_step=completed_step_seq,
+        )
+        await store.emit_event(
+            run_id,
+            f"step_{completed_step_seq}",
+            "step_paused",
+            f"Paused after Step {completed_step_seq} (step-by-step mode). Waiting for operator advance.",
+            {"step_seq": completed_step_seq},
+        )
+
+    while True:
+        await asyncio.sleep(0.4)
+        latest = await store.get_run(run_id)
+        if not latest or latest.halt_requested or not latest.step_paused:
+            break
+
+
 async def execute_job(
     run_id: str,
     store: MongoStore | None = None,
@@ -134,7 +169,7 @@ async def execute_job(
     target_client: httpx.AsyncClient | None = None,
     settings: Settings | None = None,
     model_override: Model | None = None,
-    step_delay: float = 0.8,
+    step_delay: float = 0.5,
 ) -> JobRun:
     """Run or resume a 5-stage Track 3 job from MongoDB Atlas checkpoints."""
     with trace(
@@ -158,7 +193,7 @@ async def _execute_job_impl(
     target_client: httpx.AsyncClient | None = None,
     settings: Settings | None = None,
     model_override: Model | None = None,
-    step_delay: float = 0.8,
+    step_delay: float = 0.5,
 ) -> JobRun:
     configure_observability()
     cfg = settings or get_settings()
@@ -245,6 +280,14 @@ async def _execute_job_impl(
                 {"memories": cp1.post_state["recalled_memories"]},
             )
 
+        await _pause_if_step_by_step(db_store, run_id, 1)
+
+        # After the Step 1 pause resumes, re-read step_1_plan checkpoint from Atlas
+        # so any operator edits to post_state["fix_plan"] take effect in Steps 2–4!
+        cp1_refreshed = await db_store.get_checkpoint(run_id, "step_1_plan")
+        if cp1_refreshed and "fix_plan" in cp1_refreshed.post_state:
+            fix_plan = FixPlan.model_validate(cp1_refreshed.post_state["fix_plan"])
+
         if step_delay > 0:
             await asyncio.sleep(step_delay)
         if await _check_halt_or_rollback(db_store, gh, http, run_id):
@@ -302,6 +345,8 @@ async def _execute_job_impl(
                 f"Committed {fix_plan.patch_filename} on GitHub branch {branch_name}.",
                 {"branch_url": cp2.external_ref, "commit_sha": commit_sha[:8]},
             )
+
+        await _pause_if_step_by_step(db_store, run_id, 2)
 
         if step_delay > 0:
             await asyncio.sleep(step_delay)
@@ -550,6 +595,8 @@ async def _execute_job_impl(
                 )
                 return await db_store.get_run(run_id) or run
 
+        await _pause_if_step_by_step(db_store, run_id, 3)
+
         if step_delay > 0:
             await asyncio.sleep(step_delay)
         if await _check_halt_or_rollback(db_store, gh, http, run_id):
@@ -687,7 +734,7 @@ def main() -> None:
     parser.add_argument(
         "--step-delay",
         type=float,
-        default=0.8,
+        default=0.5,
         help="Delay between steps for live demo pacing",
     )
     args = parser.parse_args()

@@ -198,6 +198,49 @@
     </div>
   </section>
 </div>
+
+<!-- Compact Live Infra & Event Stream Mini-Popup -->
+<aside class="live-mini-dock" id="live-mini-dock" aria-label="Live Infrastructure and Event Stream">
+  <div id="live-mini-popup" class="live-mini-popup hidden" role="dialog" aria-label="Live Infra and Event Stream">
+    <div class="live-mini-head">
+      <span>Live Infra &amp; Stream</span>
+      <button type="button" class="btn btn-ghost btn-sm" style="padding: 2px 6px;" onclick="toggleLiveMiniPopup(false)" aria-label="Close live stream popup">✕</button>
+    </div>
+    <div class="live-mini-section">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+        <span style="font-size: 12px; font-weight: 600; color: var(--text-secondary);">Target (:8001)</span>
+        <a href="/infra" target="_blank" style="font-size: 12px;">Open /infra ↗</a>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span id="mini-target-status" class="badge badge-neutral">checking…</span>
+        <span id="mini-target-mode" class="badge badge-info">normal</span>
+        <span id="mini-target-deps" class="mono" style="font-size: 12px; color: var(--muted);">0 active</span>
+      </div>
+    </div>
+    <div class="live-mini-section">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+        <span style="font-size: 12px; font-weight: 600; color: var(--text-secondary);">Event Stream</span>
+        <a href="/store" target="_blank" style="font-size: 12px;">Open /store ↗</a>
+      </div>
+      <div class="live-mini-events" id="mini-events-list">
+        <div style="font-size: 12px; color: var(--muted);">No events streamed yet.</div>
+      </div>
+    </div>
+  </div>
+
+  <button
+    type="button"
+    id="live-mini-toggle"
+    class="live-mini-toggle"
+    aria-expanded="false"
+    aria-controls="live-mini-popup"
+    onclick="toggleLiveMiniPopup()"
+  >
+    <span id="mini-pulse-dot" class="pulse-dot"></span>
+    <span>Live Infra &amp; Stream</span>
+    <span id="mini-toggle-count" class="badge badge-neutral">0</span>
+  </button>
+</aside>
 {% endblock %}
 
 {% block scripts %}
@@ -904,6 +947,83 @@
       const initial = {{ initial_snapshot | tojson | safe }};
       if (initial) renderSnapshot(initial);
       connectStream(currentRunId);
+    }
+  });
+
+  function toggleLiveMiniPopup(forceState) {
+    const popup = document.getElementById("live-mini-popup");
+    const toggle = document.getElementById("live-mini-toggle");
+    if (!popup || !toggle) return;
+    const willOpen = typeof forceState === "boolean" ? forceState : popup.classList.contains("hidden");
+    popup.classList.toggle("hidden", !willOpen);
+    toggle.setAttribute("aria-expanded", willOpen ? "true" : "false");
+    if (willOpen) {
+      refreshMiniTargetState();
+    }
+  }
+
+  async function refreshMiniTargetState() {
+    try {
+      const resp = await fetch("/api/target-state");
+      if (!resp.ok) return;
+      const t = await resp.json();
+      updateMiniTarget(t);
+    } catch (err) {
+      console.warn("Mini target refresh failed:", err);
+    }
+  }
+
+  function updateMiniTarget(t) {
+    if (!t) return;
+    const st = document.getElementById("mini-target-status");
+    if (st) {
+      const online = t.online !== false;
+      st.textContent = online ? "Online" : "Offline";
+      st.className = "badge " + (online ? "badge-ok" : "badge-warn");
+    }
+    const modeEl = document.getElementById("mini-target-mode");
+    if (modeEl) {
+      modeEl.textContent = t.chaos_mode || "normal";
+    }
+    const depsEl = document.getElementById("mini-target-deps");
+    if (depsEl) {
+      const deps = t.deployments || [];
+      const active = deps.filter((d) => Boolean(d.active)).length;
+      depsEl.textContent = `${active}/${deps.length} active`;
+    }
+  }
+
+  function updateMiniEvents(evs) {
+    const list = document.getElementById("mini-events-list");
+    const count = document.getElementById("mini-toggle-count");
+    const total = evs ? evs.length : 0;
+    if (count) count.textContent = String(total);
+    if (!list) return;
+    if (!evs || evs.length === 0) {
+      list.innerHTML = '<div style="font-size: 12px; color: var(--muted);">No events streamed yet.</div>';
+      return;
+    }
+    list.innerHTML = [...evs].reverse().slice(0, 6).map((ev) => `
+      <div class="live-mini-ev">
+        <div class="mono" style="font-weight: 600; color: var(--text);">${FinishLineLiveRun.escapeHtml(ev.step_key || "")} · ${FinishLineLiveRun.escapeHtml(ev.event_type || "")}</div>
+        <div style="color: var(--text-secondary);">${FinishLineLiveRun.escapeHtml(ev.message || "")}</div>
+      </div>
+    `).join("");
+  }
+
+  document.addEventListener("finishline:snapshot", function (ev) {
+    const snap = ev.detail || {};
+    if (snap.target) updateMiniTarget(snap.target);
+    if (snap.events) updateMiniEvents(snap.events);
+    const dot = document.getElementById("mini-pulse-dot");
+    if (dot && snap.run) {
+      dot.className = "pulse-dot" + (snap.run.status === "running" ? " running" : (snap.run.status === "awaiting_approval" ? " awaiting" : ""));
+    }
+  });
+
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") {
+      toggleLiveMiniPopup(false);
     }
   });
 </script>

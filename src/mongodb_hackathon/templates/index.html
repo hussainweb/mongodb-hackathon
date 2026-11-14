@@ -896,6 +896,12 @@
     if (stepList) {
       stepList.innerHTML = '<div class="empty-state">Select or compose a config change prompt above and click <strong>Run Config Agent</strong>.</div>';
     }
+    updateMiniEvents([]);
+    const miniDot = document.getElementById("mini-pulse-dot");
+    if (miniDot) miniDot.className = "pulse-dot";
+    if (window.FinishLineLiveRun) {
+      FinishLineLiveRun.updateLiveRunStrip({ run: null });
+    }
     if (window.history && window.history.replaceState) {
       const url = new URL(window.location.href);
       url.searchParams.set("new", "1");

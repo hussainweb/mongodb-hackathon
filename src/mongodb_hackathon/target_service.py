@@ -5,12 +5,19 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from mongodb_hackathon.models import ChaosMode, utc_now
 
 app = FastAPI(title="FinishLine Target Deployment Service", version="2.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class DeploymentV1Request(BaseModel):
@@ -291,8 +298,10 @@ def run_target_service() -> None:
     settings = get_settings()
     uvicorn.run(
         "mongodb_hackathon.target_service:app",
-        host="127.0.0.1",
+        host=settings.server_host,
         port=settings.target_service_port,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
         log_level="info",
     )
 

@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     target_service_url: str = Field(
         default="http://127.0.0.1:8001", alias="TARGET_SERVICE_URL"
     )
+    server_host: str = Field(default="0.0.0.0", alias="SERVER_HOST")
     control_room_port: int = Field(default=8000, alias="CONTROL_ROOM_PORT")
     target_service_port: int = Field(default=8001, alias="TARGET_SERVICE_PORT")
 

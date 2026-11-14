@@ -20,9 +20,11 @@ def main() -> None:
             "uvicorn",
             "mongodb_hackathon.target_service:app",
             "--host",
-            "127.0.0.1",
+            settings.server_host,
             "--port",
             str(settings.target_service_port),
+            "--proxy-headers",
+            "--forwarded-allow-ips=*",
         ]
     )
     control_proc = subprocess.Popen(
@@ -32,15 +34,17 @@ def main() -> None:
             "uvicorn",
             "mongodb_hackathon.app:app",
             "--host",
-            "127.0.0.1",
+            settings.server_host,
             "--port",
             str(settings.control_room_port),
+            "--proxy-headers",
+            "--forwarded-allow-ips=*",
         ]
     )
 
     print(
-        f"FinishLine running: Control Room -> http://127.0.0.1:{settings.control_room_port} "
-        f"| Target Service -> http://127.0.0.1:{settings.target_service_port}",
+        f"FinishLine running on {settings.server_host}: Control Room -> :{settings.control_room_port} "
+        f"| Target Service -> :{settings.target_service_port}",
         flush=True,
     )
 

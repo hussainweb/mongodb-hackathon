@@ -17,3 +17,10 @@ build/
 .beads/proxieddb/
 *.gate.lock*
 src/mongodb_hackathon/static/audio/*.mp3
+
+# OpenTofu runtime state & local workspace cache
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+.finishline_workspaces/

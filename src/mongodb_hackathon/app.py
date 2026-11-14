@@ -122,6 +122,7 @@ class CreateMemoryRequest(BaseModel):
     title: str
     content: str
     resolution: str = ""
+    fix_action: str = ""
     field_mapping: dict[str, str] = Field(default_factory=dict)
     status: Literal["active", "invalidated"] = "active"
 
@@ -151,14 +152,75 @@ async def _fetch_target_state(http: httpx.AsyncClient) -> dict[str, Any]:
     try:
         resp = await http.get("/state", timeout=2.0)
         if resp.status_code == 200:
-            return dict(resp.json())
+            data = dict(resp.json())
+            data.setdefault("online", True)
+            data.setdefault("api_version", "v1")
+            return data
     except httpx.HTTPError:
         pass
     return {
         "online": False,
         "chaos_mode": ChaosMode.NORMAL.value,
+        "api_version": "v1",
         "deployments": [],
         "recent_requests": [],
+    }
+
+
+async def _fetch_target_openapi(http: httpx.AsyncClient) -> dict[str, Any]:
+    """Fetch live OpenAPI schema from target service with offline fallback and contract diff."""
+    online = False
+    openapi_doc: dict[str, Any] = {}
+    try:
+        resp = await http.get("/openapi.json", timeout=2.0)
+        if resp.status_code == 200:
+            online = True
+            openapi_doc = dict(resp.json())
+    except httpx.HTTPError:
+        pass
+
+    if not openapi_doc:
+        from mongodb_hackathon.target_service import app as target_fastapi_app
+
+        openapi_doc = target_fastapi_app.openapi()
+
+    contract_diff = {
+        "v1_endpoint": "/v1/deployments",
+        "v2_endpoint": "/v2/deployments",
+        "changes": [
+            {
+                "v1_field": "webhook_url",
+                "v2_field": "callback_uri",
+                "kind": "renamed",
+                "type": "string (url -> uri)",
+                "detail": "Renamed webhook delivery target parameter",
+            },
+            {
+                "v1_field": "rate_limit",
+                "v2_field": "max_rps",
+                "kind": "renamed",
+                "type": "integer (1..10000)",
+                "detail": "Renamed rate limit parameter to max requests per second",
+            },
+            {
+                "v1_field": "—",
+                "v2_field": "env_tier",
+                "kind": "added",
+                "type": "string ('staging' | 'canary' | 'production')",
+                "detail": "Required deployment environment tier qualifier",
+            },
+        ],
+        "field_mapping": {
+            "endpoint": "/v2/deployments",
+            "webhook_url": "callback_uri",
+            "rate_limit": "max_rps",
+            "env_tier": "staging",
+        },
+    }
+    return {
+        "online": online,
+        "openapi": openapi_doc,
+        "contract_diff": contract_diff,
     }
 
 
@@ -288,6 +350,11 @@ async def _resolve_active_run_id(
     return runs[0].run_id
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> HTMLResponse:
+    return HTMLResponse(content="", status_code=204)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     """Render the prompt-first FinishLine Release Closer Workspace page."""
@@ -378,6 +445,7 @@ async def infra_page(request: Request) -> HTMLResponse:
     """Render the standalone Infrastructure and Target Microservice control room."""
     store, _, http, settings = _deps(request)
     target = await _fetch_target_state(http)
+    openapi_info = await _fetch_target_openapi(http)
     initial_run_id = await _resolve_active_run_id(store)
     initial_snapshot = (
         await _build_run_snapshot(store, http, initial_run_id)
@@ -392,6 +460,7 @@ async def infra_page(request: Request) -> HTMLResponse:
         {
             "active_page": "infra",
             "target": target,
+            "openapi_info": openapi_info,
             "chaos_modes": [m.value for m in ChaosMode],
             "initial_run_id": initial_run_id,
             "initial_snapshot": initial_snapshot,
@@ -405,15 +474,29 @@ async def store_page(request: Request) -> HTMLResponse:
     """Render the standalone MongoDB Atlas Store page (collections, memories, and demo repos)."""
     store, _, http, settings = _deps(request)
     runs = await store.list_runs(limit=30)
-    memories = await store.list_memories(limit=50)
     repos = await store.list_repos()
-    initial_run_id = await _resolve_active_run_id(store)
+    repo = settings.github_sandbox_repo.strip()
+    if not repos:
+        starter_repos, _ = _build_starter_repos(
+            repo or "dry-run/finishline-demo-sandbox"
+        )
+        repos = starter_repos
+
+    requested_repo = request.query_params.get("repo", "").strip()
+    requested_run_id = request.query_params.get("run_id", "").strip()
+
+    memories = await store.list_memories(
+        source_repo=requested_repo or None,
+        include_global=bool(requested_repo),
+        limit=50,
+    )
+
+    initial_run_id = await _resolve_active_run_id(store, requested_run_id)
     initial_snapshot = (
         await _build_run_snapshot(store, http, initial_run_id)
         if initial_run_id
         else None
     )
-    repo = settings.github_sandbox_repo.strip()
 
     return templates.TemplateResponse(
         request,
@@ -425,7 +508,9 @@ async def store_page(request: Request) -> HTMLResponse:
             "repos": [r.model_dump(mode="json") for r in repos],
             "initial_run_id": initial_run_id,
             "initial_snapshot": initial_snapshot,
+            "selected_repo": requested_repo,
             "sandbox_repo": repo or "dry-run/finishline-demo-sandbox",
+            "mongodb_db_name": settings.mongodb_db,
         },
     )
 
@@ -489,6 +574,12 @@ async def get_run_snapshot(request: Request, run_id: str) -> JSONResponse:
     if snapshot is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return JSONResponse(snapshot)
+
+
+@app.get("/runs/{run_id}")
+async def get_run_direct(request: Request, run_id: str) -> JSONResponse:
+    """Direct alias for GET /api/runs/{run_id}."""
+    return await get_run_snapshot(request, run_id)
 
 
 @app.post("/runs")
@@ -947,6 +1038,14 @@ async def get_target_state(request: Request) -> JSONResponse:
     return JSONResponse(await _fetch_target_state(http))
 
 
+@app.get("/api/target-openapi")
+async def get_target_openapi(request: Request) -> JSONResponse:
+    """Fetch live or fallback OpenAPI schema and v1 -> v2 contract diff."""
+    _, _, http, _ = _deps(request)
+    data = await _fetch_target_openapi(http)
+    return JSONResponse(data)
+
+
 @app.get("/api/repos")
 async def list_repos(request: Request) -> JSONResponse:
     """List curated demo/sandbox repositories from MongoDB Atlas `demo_repos`."""
@@ -1032,7 +1131,7 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> JSONResp
     if not title or not content:
         raise HTTPException(status_code=400, detail="title and content must be non-empty")
 
-    resolution = body.resolution.strip() or content
+    resolution = body.resolution.strip() or body.fix_action.strip() or content
     source_repo = body.source_repo.strip() or "*"
     memory_id = body.memory_id.strip() or f"{body.kind}-{uuid.uuid4().hex[:10]}"
     emb_text = f"{title}\n{content}\n{resolution}"
@@ -1062,7 +1161,14 @@ async def invalidate_memory_endpoint(
 ) -> JSONResponse:
     """Invalidate (or restore) a drift playbook memory in Atlas (Track 2 crossover)."""
     store, _, _, _ = _deps(request)
-    new_status = "active" if restore else "invalidated"
+    is_restore = restore
+    if not is_restore and request.headers.get("content-type", "").startswith("application/json"):
+        with suppress(Exception):
+            payload = await request.json()
+            if isinstance(payload, dict) and "restore" in payload:
+                is_restore = bool(payload["restore"])
+
+    new_status = "active" if is_restore else "invalidated"
     res = await store.memories.update_one(
         {"memory_id": memory_id},
         {"$set": {"status": new_status, "updated_at": utc_now()}},

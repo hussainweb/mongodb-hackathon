@@ -10,7 +10,13 @@ import pytest
 from mongodb_hackathon import app as ctrl_mod
 from mongodb_hackathon.config import Settings
 from mongodb_hackathon.github_adapter import GitHubSandboxAdapter
-from mongodb_hackathon.models import JobRun, RunStatus
+from mongodb_hackathon.models import (
+    ChaosMode,
+    JobRun,
+    RunStatus,
+    StepCheckpoint,
+    StepStatus,
+)
 from mongodb_hackathon.mongo import MongoStore
 from mongodb_hackathon.target_service import app as target_app
 from mongodb_hackathon.target_service import state as target_state
@@ -116,9 +122,22 @@ async def test_standalone_pages_and_navigation() -> None:
                 assert r_infra.status_code == 200
                 assert "Target Infrastructure Control" in r_infra.text
                 assert "live-run-strip" in r_infra.text
-                assert "Target Chaos Mode" in r_infra.text
-                assert "silent_drop_202" in r_infra.text
-                assert "drift_v2" in r_infra.text
+                assert "Downstream Fault Injection Mode" in r_infra.text
+                assert "Silent 202" in r_infra.text
+                assert "Drift v2" in r_infra.text
+                assert "Approval Gate" in r_infra.text
+                assert "Before Step 3" in r_infra.text
+                assert "Before Step 4" in r_infra.text
+                assert "Reset Target to Normal" in r_infra.text
+                assert "deployments-table" in r_infra.text
+                assert "Active" in r_infra.text
+                assert "Status" in r_infra.text
+                assert "Target OpenAPI &amp; Contract Drift Inspector" in r_infra.text
+                assert "callback_uri" in r_infra.text
+                assert "max_rps" in r_infra.text
+                assert "env_tier" in r_infra.text
+                assert "Target Wire Log" in r_infra.text
+                assert "requests-feed" in r_infra.text
                 assert test_run_id in r_infra.text
 
                 # 3. MongoDB Store page (GET /store)
@@ -126,7 +145,20 @@ async def test_standalone_pages_and_navigation() -> None:
                 assert r_store.status_code == 200
                 assert "MongoDB Atlas Store" in r_store.text
                 assert "badge-mongo" in r_store.text
-                assert "Atlas Cluster0" in r_store.text
+                assert "Atlas Cluster0 · MongoDB 9.0.7" in r_store.text
+                assert "MongoDB Atlas Data Explorer Filters" in r_store.text
+                assert 'id="filter-run-query"' in r_store.text
+                assert 'id="filter-cp-query"' in r_store.text
+                assert 'id="filter-ev-query"' in r_store.text
+                assert 'id="filter-mem-query"' in r_store.text
+                assert "$jsonSchema validated" in r_store.text
+                assert 'id="run-selector"' in r_store.text
+                assert 'id="checkpoints-table"' in r_store.text
+                assert 'id="store-events-feed"' in r_store.text
+                assert 'id="memory-repo-filter"' in r_store.text
+                assert 'id="add-memory-form"' in r_store.text
+                assert "Filter Rules" in r_store.text
+                assert "Open in Workspace ↗" in r_store.text
                 assert "live-run-strip" in r_store.text
                 assert test_run_id in r_store.text
     finally:
@@ -290,6 +322,266 @@ async def test_workspace_prompt_composer_and_pacing_presets() -> None:
                 assert "silent_drop_202" not in html
                 assert "drift_v2" not in html
     finally:
+        if hasattr(ctrl_mod.app.state, "_external_store"):
+            delattr(ctrl_mod.app.state, "_external_store")
+        await store.close()
+        target_state.reset()
+
+
+@pytest.mark.asyncio
+async def test_infra_page_api_and_interactions() -> None:
+    """Verify /infra OpenAPI inspector, deployments table active badges, and chaos toggles."""
+    target_state.reset()
+    store = MongoStore(Settings())
+    await store.ensure_schema_and_indexes()
+
+    # Seed target service state with active and dropped deployments
+    target_state.deployments["dep-act-1"] = {
+        "deployment_id": "dep-act-1",
+        "service_name": "payments-svc",
+        "branch": "fix/webhook-resilience",
+        "env_tier": "staging",
+        "max_rps": 300,
+        "api_version": "v1",
+        "active": True,
+        "status": "active",
+    }
+    target_state.deployments["dep-drp-2"] = {
+        "deployment_id": "dep-drp-2",
+        "service_name": "billing-svc",
+        "branch": "fix/silent-drop-retry",
+        "env_tier": "staging",
+        "max_rps": 150,
+        "api_version": "v1",
+        "active": False,
+        "status": "dropped_unverified",
+    }
+    target_state.request_log.append(
+        {
+            "ts": "2026-11-14T19:00:00Z",
+            "method": "POST",
+            "path": "/v1/deployments",
+            "status_code": 201,
+            "summary": "deployed dep-act-1 (active)",
+        }
+    )
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=target_app), base_url="http://test-target"
+        ) as tc:
+            ctrl_mod.app.state._external_store = True
+            ctrl_mod.app.state.store = store
+            gh_cfg = Settings()
+            ctrl_mod.app.state.settings = gh_cfg
+            ctrl_mod.app.state.target_client = tc
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=ctrl_mod.app),
+                base_url="http://test-control",
+            ) as ac:
+                # 1. Test GET /api/target-openapi
+                r_api = await ac.get("/api/target-openapi")
+                assert r_api.status_code == 200
+                api_data = r_api.json()
+                assert "openapi" in api_data
+                assert "contract_diff" in api_data
+                assert api_data["contract_diff"]["v1_endpoint"] == "/v1/deployments"
+                assert api_data["contract_diff"]["v2_endpoint"] == "/v2/deployments"
+                assert any(
+                    c["v2_field"] == "callback_uri"
+                    for c in api_data["contract_diff"]["changes"]
+                )
+                assert any(
+                    c["v2_field"] == "max_rps"
+                    for c in api_data["contract_diff"]["changes"]
+                )
+                assert any(
+                    c["v2_field"] == "env_tier"
+                    for c in api_data["contract_diff"]["changes"]
+                )
+
+                # 2. Test GET /infra rendering
+                r_infra = await ac.get("/infra")
+                assert r_infra.status_code == 200
+                html = r_infra.text
+
+                # Verify deployments table with active=true/false and status
+                assert "dep-act-1" in html
+                assert "dep-drp-2" in html
+                assert '<span class="badge badge-ok">true</span>' in html
+                assert '<span class="badge badge-danger">false</span>' in html
+                assert "dropped_unverified" in html
+
+                # Verify OpenAPI inspector and contract drift
+                assert "callback_uri" in html
+                assert "max_rps" in html
+                assert "env_tier" in html
+
+                # Verify Wire Log
+                assert "POST /v1/deployments" in html
+                assert "deployed dep-act-1 (active)" in html
+
+                # 3. Test Chaos Toggle and Reset
+                r_chaos = await ac.post("/chaos/drift_v2")
+                assert r_chaos.status_code == 200
+                assert target_state.chaos_mode == ChaosMode.DRIFT_V2
+
+                r_reset = await ac.post("/target/reset")
+                assert r_reset.status_code == 200
+                assert target_state.chaos_mode == ChaosMode.NORMAL
+                assert len(target_state.deployments) == 0
+    finally:
+        if hasattr(ctrl_mod.app.state, "_external_store"):
+            delattr(ctrl_mod.app.state, "_external_store")
+        await store.close()
+        target_state.reset()
+
+
+@pytest.mark.asyncio
+async def test_store_page_api_and_interactions() -> None:
+    """Verify /store Data Explorer filters, checkpoints, service_events, and memory CRUD."""
+    target_state.reset()
+    store = MongoStore(Settings())
+    await store.ensure_schema_and_indexes()
+
+    suffix = uuid.uuid4().hex[:8]
+    test_run_id = f"tst-store-{suffix}"
+    test_repo = f"dry-run/test-repo-{suffix}"
+    created_memory_id = ""
+
+    try:
+        # Create test run
+        await store.create_run(
+            JobRun(
+                run_id=test_run_id,
+                repo=test_repo,
+                issue_number=99,
+                issue_title="Store verification run",
+                issue_body="Testing store page components",
+                target_service_url="http://test-target",
+                status=RunStatus.RUNNING,
+                current_step=1,
+            )
+        )
+
+        # Upsert atomic $jsonSchema checkpoint
+        cp = StepCheckpoint(
+            run_id=test_run_id,
+            step_key="step_1_plan",
+            step_seq=1,
+            title="Step 1: Diagnose issue & retrieve experience",
+            idempotency_key=f"idem-{test_run_id}-1",
+            status=StepStatus.VERIFIED_TOOK_EFFECT,
+            attempts=1,
+            took_effect=True,
+            post_state={"diagnosis": "Found breaking drift v2"},
+            probe_result={"status": "confirmed_schema"},
+        )
+        await store.upsert_checkpoint_atomic(cp)
+
+        # Emit service event
+        await store.emit_event(
+            test_run_id,
+            "step_1_plan",
+            "plan_verified",
+            "Step 1 plan verified against Atlas vector playbooks",
+            {"rule_id": "test-rule-1"},
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=target_app), base_url="http://test-target"
+        ) as tc:
+            ctrl_mod.app.state._external_store = True
+            ctrl_mod.app.state.store = store
+            gh_cfg = Settings()
+            ctrl_mod.app.state.settings = gh_cfg
+            ctrl_mod.app.state.target_client = tc
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=ctrl_mod.app),
+                base_url="http://test-control",
+            ) as ac:
+                # 1. Test GET /store with run_id and repo query params
+                r_store = await ac.get(f"/store?run_id={test_run_id}&repo={test_repo}")
+                assert r_store.status_code == 200
+                html = r_store.text
+
+                # Prominent Atlas header badges
+                assert "Atlas Cluster0 · MongoDB 9.0.7" in html
+                assert "job_runs" in html
+                assert "step_checkpoints" in html
+                assert "service_events" in html
+                assert "experience_memories" in html
+                assert "demo_repos" in html
+
+                # Atlas Data Explorer filters snippets
+                assert f'{{"run_id": "{test_run_id}"}}' in html
+                assert f'{{"source_repo": "{test_repo}", "status": "active"}}' in html
+
+                # $jsonSchema validated checkpoints
+                assert "$jsonSchema validated" in html
+                assert "step_1_plan" in html
+                assert f"idem-{test_run_id}-1" in html
+                assert "Found breaking drift v2" in html
+
+                # Live service_events tail
+                assert "Step 1 plan verified against Atlas vector playbooks" in html
+
+                # 2. Test GET /runs/{run_id} direct endpoint
+                r_run = await ac.get(f"/runs/{test_run_id}")
+                assert r_run.status_code == 200
+                run_snap = r_run.json()
+                assert run_snap["run"]["run_id"] == test_run_id
+                assert len(run_snap["checkpoints"]) == 1
+                assert run_snap["checkpoints"][0]["step_key"] == "step_1_plan"
+                assert len(run_snap["events"]) == 1
+
+                # 3. Test Track 2 Memory creation with fix_action
+                mem_payload = {
+                    "kind": "repo_rule",
+                    "source_repo": test_repo,
+                    "title": "Enforce canary RPS limit",
+                    "content": "Staging canary deployments must not exceed max_rps=100",
+                    "fix_action": "Set max_rps=100 and env_tier='canary' in config",
+                }
+                r_create_mem = await ac.post("/api/memories", json=mem_payload)
+                assert r_create_mem.status_code == 201
+                created_mem = r_create_mem.json()["memory"]
+                created_memory_id = created_mem["memory_id"]
+                assert created_mem["source_repo"] == test_repo
+                assert created_mem["title"] == "Enforce canary RPS limit"
+                assert created_mem["resolution"] == "Set max_rps=100 and env_tier='canary' in config"
+                assert created_mem["status"] == "active"
+
+                # 4. Test filtering memories by source_repo
+                r_list_mem = await ac.get(
+                    f"/api/memories?source_repo={test_repo}&include_global=true"
+                )
+                assert r_list_mem.status_code == 200
+                mem_list = r_list_mem.json()["memories"]
+                assert any(m["memory_id"] == created_memory_id for m in mem_list)
+
+                # 5. Test Invalidating memory
+                r_inval = await ac.post(
+                    f"/memories/{created_memory_id}/invalidate?restore=false"
+                )
+                assert r_inval.status_code == 200
+                assert r_inval.json()["status"] == "invalidated"
+
+                # 6. Test Restoring memory (via json body restore=True)
+                r_restore = await ac.post(
+                    f"/memories/{created_memory_id}/invalidate",
+                    json={"restore": True},
+                )
+                assert r_restore.status_code == 200
+                assert r_restore.json()["status"] == "active"
+    finally:
+        await store.runs.delete_many({"run_id": test_run_id})
+        await store.checkpoints.delete_many({"run_id": test_run_id})
+        await store.events.delete_many({"run_id": test_run_id})
+        if created_memory_id:
+            await store.memories.delete_many({"memory_id": created_memory_id})
         if hasattr(ctrl_mod.app.state, "_external_store"):
             delattr(ctrl_mod.app.state, "_external_store")
         await store.close()

@@ -6,7 +6,7 @@
 <div class="page-header">
   <div>
     <h1 class="page-title">Target Infrastructure Control</h1>
-    <div class="page-subtitle">Inspect deployment target microservice (:8001), inject chaos modes, and observe active probe verifications.</div>
+    <div class="page-subtitle">Inspect deployment target microservice (:8001), inject mid-flight chaos faults, and observe live probe verifications.</div>
   </div>
   <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
     <button class="btn btn-ghost btn-sm" onclick="refreshTargetState()">↻ Refresh State</button>
@@ -19,7 +19,7 @@
     <div class="section-head">
       <div>
         <h2>Chaos Engineering Controls</h2>
-        <div class="section-head-desc">Toggle chaos behaviors on the downstream deployment target microservice to test resilience.</div>
+        <div class="section-head-desc">Toggle downstream failure modes on the target microservice to test autonomous recovery and verification.</div>
       </div>
       <span id="target-online-badge" class="badge {% if target.online %}badge-ok{% else %}badge-warn{% endif %}">
         {{ 'Online (:8001)' if target.online else 'Offline / Mock' }}
@@ -27,30 +27,74 @@
     </div>
 
     <div style="display: flex; flex-direction: column; gap: 16px;">
-      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: var(--radius-sm);">
-        <div>
-          <div style="font-weight: 500; font-size: 13.5px;">Active Chaos Mode</div>
-          <div style="font-size: 12px; color: var(--muted);">Controls how the target service responds to deployment patches and probes.</div>
+      <!-- Mid-flight Chaos Mode Segmented Control -->
+      <div style="display: flex; flex-direction: column; gap: 12px; padding: 14px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: var(--radius-sm);">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+          <div>
+            <div style="font-weight: 600; font-size: 13.5px;">Downstream Fault Injection Mode</div>
+            <div style="font-size: 12px; color: var(--muted);">Select how target microservice responds to configuration deploys and probes.</div>
+          </div>
+          <div class="segmented" role="group" aria-label="Target Chaos Mode">
+            {% set labels = {
+              'normal': 'Normal',
+              'silent_drop_202': 'Silent 202',
+              'drift_v2': 'Drift v2',
+              'require_approval_gate': 'Approval Gate'
+            } %}
+            {% for mode in chaos_modes %}
+              <button
+                class="{% if target.get('chaos_mode') == mode %}active{% endif %}"
+                data-mode="{{ mode }}"
+                onclick="setChaosMode('{{ mode }}')"
+              >{{ labels.get(mode, mode) }}</button>
+            {% endfor %}
+          </div>
         </div>
-        <div class="segmented" role="group" aria-label="Target Chaos Mode">
-          {% set labels = {
-            'normal': 'Normal',
-            'silent_drop_202': 'Silent 202',
-            'drift_v2': 'Drift v2',
-            'require_approval_gate': 'Approval Gate'
-          } %}
-          {% for mode in chaos_modes %}
-            <button
-              class="{% if target.get('chaos_mode') == mode %}active{% endif %}"
-              data-mode="{{ mode }}"
-              onclick="setChaosMode('{{ mode }}')"
-            >{{ labels.get(mode, mode) }}</button>
-          {% endfor %}
+
+        <!-- Inline Demo Hints -->
+        <div class="demo-hint-box">
+          <div style="font-weight: 600; font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px;">
+            <span>💡 Live Run Fault Timing &amp; Recovery Expectations</span>
+          </div>
+          <div class="demo-hint-grid">
+            <div class="demo-hint-item">
+              <div class="demo-hint-header">
+                <span class="demo-hint-title">Silent 202 Drop</span>
+                <span class="badge badge-warn" style="font-size: 10px;">Before Step 3</span>
+              </div>
+              <div class="demo-hint-desc">Target returns <code>202 Accepted</code> but leaves <code>active=false</code>. Worker detects false confirmation during probe and retries until verified.</div>
+            </div>
+            <div class="demo-hint-item">
+              <div class="demo-hint-header">
+                <span class="demo-hint-title">Contract Drift v2</span>
+                <span class="badge badge-danger" style="font-size: 10px;">Before Step 3</span>
+              </div>
+              <div class="demo-hint-desc">Target rejects v1 with <code>422 API_CONTRACT_DRIFT</code>. Worker recalls Atlas drift playbook, adapts fields (<code>callback_uri</code>, <code>max_rps</code>, <code>env_tier</code>), and redeploys.</div>
+            </div>
+            <div class="demo-hint-item">
+              <div class="demo-hint-header">
+                <span class="demo-hint-title">Approval Gate</span>
+                <span class="badge badge-info" style="font-size: 10px;">Before Step 4</span>
+              </div>
+              <div class="demo-hint-desc">Target flags deployment as requiring human sign-off. Worker pauses before opening PR until voice or text approval is granted.</div>
+            </div>
+            <div class="demo-hint-item">
+              <div class="demo-hint-header">
+                <span class="demo-hint-title">Normal</span>
+                <span class="badge badge-ok" style="font-size: 10px;">Anytime</span>
+              </div>
+              <div class="demo-hint-desc">Clean happy-path deployment and verification on <code>/v1/deployments</code> with immediate <code>active=true</code>.</div>
+            </div>
+          </div>
         </div>
       </div>
 
+      <!-- Deployments Table with explicit active=true/false status -->
       <div>
-        <div style="font-weight: 500; margin-bottom: 8px;">Active Deployments on Target (<span id="dep-count">{{ target.deployments|length }}</span>)</div>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+          <div style="font-weight: 600; font-size: 13.5px;">Registered Deployments on Target (<span id="dep-count">{{ target.deployments|length }}</span>)</div>
+          <span class="badge badge-neutral" style="font-size: 11px;">Tracked by Target Service Memory</span>
+        </div>
         <div class="data-table-wrap">
           <table class="data-table" id="deployments-table">
             <thead>
@@ -58,14 +102,17 @@
                 <th>Deployment ID</th>
                 <th>Service</th>
                 <th>Branch</th>
-                <th>Rate Limit / RPS</th>
-                <th>API Version</th>
+                <th>Env Tier</th>
+                <th>Max RPS</th>
+                <th>Version</th>
+                <th>Active</th>
+                <th>Status</th>
               </tr>
             </thead>
             <tbody id="deployments-body">
               {% if not target.deployments %}
                 <tr>
-                  <td colspan="5" style="text-align: center; color: var(--muted); padding: 16px;">No deployments registered on target microservice.</td>
+                  <td colspan="8" style="text-align: center; color: var(--muted); padding: 18px;">No deployments registered on target microservice.</td>
                 </tr>
               {% endif %}
               {% for d in target.deployments %}
@@ -73,22 +120,121 @@
                   <td><code class="mono">{{ d.deployment_id or d.id or '—' }}</code></td>
                   <td><strong>{{ d.service_name or 'target' }}</strong></td>
                   <td><code class="mono">{{ d.branch or '—' }}</code></td>
+                  <td><span class="badge badge-neutral">{{ d.env_tier or 'staging' }}</span></td>
                   <td>{{ d.max_rps or d.rate_limit or '—' }}</td>
                   <td><span class="badge badge-info">{{ d.api_version or 'v1' }}</span></td>
+                  <td>
+                    {% if d.active %}
+                      <span class="badge badge-ok">true</span>
+                    {% else %}
+                      <span class="badge badge-danger">false</span>
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if d.status == 'active' %}
+                      <span class="badge badge-ok">active</span>
+                    {% elif d.status == 'dropped_unverified' %}
+                      <span class="badge badge-warn">dropped_unverified</span>
+                    {% else %}
+                      <span class="badge badge-neutral">{{ d.status or 'unknown' }}</span>
+                    {% endif %}
+                  </td>
                 </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
       </div>
+
+      <!-- OpenAPI Contract Schema & Drift Inspector -->
+      <div class="schema-diff-card" id="openapi-inspector-card">
+        <div class="schema-diff-head">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-weight: 600; font-size: 13px;">Target OpenAPI &amp; Contract Drift Inspector</span>
+            <span id="openapi-version-badge" class="badge {% if target.get('api_version') == 'v2' or target.get('chaos_mode') == 'drift_v2' %}badge-warn{% else %}badge-info{% endif %}">
+              Target API: {{ 'v2 (Drifted)' if target.get('api_version') == 'v2' or target.get('chaos_mode') == 'drift_v2' else 'v1 (Standard)' }}
+            </span>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="loadOpenAPISchema()">↻ Reload OpenAPI</button>
+        </div>
+
+        <div style="padding: 12px 14px; display: flex; flex-direction: column; gap: 12px;">
+          <!-- Concrete Drift Mapping Table -->
+          <div>
+            <div style="font-weight: 600; font-size: 12px; margin-bottom: 6px; color: var(--text-secondary);">
+              Breaking Schema Migration: <code>POST /v1/deployments</code> → <code>POST /v2/deployments</code>
+            </div>
+            <div class="data-table-wrap">
+              <table class="data-table" style="font-size: 12px;">
+                <thead>
+                  <tr>
+                    <th>v1 Contract Field</th>
+                    <th>v2 Drifted Field</th>
+                    <th>Change Type</th>
+                    <th>Drift Adaptation Detail</th>
+                  </tr>
+                </thead>
+                <tbody id="contract-diff-body">
+                  {% if openapi_info and openapi_info.contract_diff and openapi_info.contract_diff.changes %}
+                    {% for c in openapi_info.contract_diff.changes %}
+                      <tr>
+                        <td><code class="mono">{{ c.v1_field }}</code></td>
+                        <td><code class="mono" style="color: var(--accent); font-weight: 600;">{{ c.v2_field }}</code></td>
+                        <td>
+                          {% if c.kind == 'added' %}
+                            <span class="badge badge-warn">added</span>
+                          {% else %}
+                            <span class="badge badge-info">renamed</span>
+                          {% endif %}
+                        </td>
+                        <td style="color: var(--text-secondary);">{{ c.detail }}</td>
+                      </tr>
+                    {% endfor %}
+                  {% else %}
+                    <tr>
+                      <td><code class="mono">webhook_url</code></td>
+                      <td><code class="mono" style="color: var(--accent); font-weight: 600;">callback_uri</code></td>
+                      <td><span class="badge badge-info">renamed</span></td>
+                      <td style="color: var(--text-secondary);">Renamed webhook delivery target parameter</td>
+                    </tr>
+                    <tr>
+                      <td><code class="mono">rate_limit</code></td>
+                      <td><code class="mono" style="color: var(--accent); font-weight: 600;">max_rps</code></td>
+                      <td><span class="badge badge-info">renamed</span></td>
+                      <td style="color: var(--text-secondary);">Renamed rate limit parameter to max requests per second</td>
+                    </tr>
+                    <tr>
+                      <td><code class="mono">—</code></td>
+                      <td><code class="mono" style="color: var(--accent); font-weight: 600;">env_tier</code></td>
+                      <td><span class="badge badge-warn">added</span></td>
+                      <td style="color: var(--text-secondary);">Required deployment environment tier: staging | canary | production</td>
+                    </tr>
+                  {% endif %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Inspectable Live /openapi.json JSON Viewer -->
+          <details style="border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px 12px; background: var(--surface);">
+            <summary style="cursor: pointer; font-weight: 500; font-size: 12px; color: var(--text-secondary); user-select: none;">
+              Inspect Raw Target <code>/openapi.json</code> Schema Definitions
+            </summary>
+            <div style="margin-top: 8px;">
+              <pre class="code-block-preview" id="openapi-preview-raw">{{ openapi_info.openapi | tojson(indent=2) if openapi_info and openapi_info.openapi else '{\n  "info": {"title": "FinishLine Target Deployment Service", "version": "2.0.0"}\n}' }}</pre>
+            </div>
+          </details>
+        </div>
+      </div>
     </div>
   </section>
 
+  <!-- Target Wire Log Feed -->
   <aside class="surface">
     <div class="section-head">
       <div>
-        <h2>Target Request Traffic</h2>
-        <div class="section-head-desc">Incoming calls received by the target deployment microservice.</div>
+        <h2>Target Wire Log</h2>
+        <div class="section-head-desc">Live HTTP requests received by the downstream target microservice.</div>
       </div>
       <span class="badge badge-neutral" id="req-count">{{ target.recent_requests|length }} logged</span>
     </div>
@@ -98,12 +244,17 @@
         <div class="empty-state">No requests recorded on target service yet.</div>
       {% endif %}
       {% for req in target.recent_requests|reverse %}
+        {% set status_num = req.status_code if req.status_code is defined else req.status %}
+        {% set summary_text = req.summary or req.detail or (req.body | tojson if req.body is defined else '') %}
+        {% set timestamp_str = req.ts or req.timestamp or '' %}
         <div class="feed-row">
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
             <span class="feed-type">{{ req.method }} {{ req.path }}</span>
-            <span class="badge {% if req.status < 300 %}badge-ok{% elif req.status < 500 %}badge-warn{% else %}badge-danger{% endif %}">{{ req.status }}</span>
+            <span class="badge {% if status_num and status_num < 300 %}badge-ok{% elif status_num and status_num < 500 %}badge-warn{% else %}badge-danger{% endif %}">{{ status_num or 200 }}</span>
           </div>
-          <div class="feed-msg mono">{{ req.timestamp or '' }} · {% if req.body %}{{ req.body | tojson }}{% endif %}</div>
+          <div class="feed-msg mono">
+            {% if timestamp_str %}{{ timestamp_str }} · {% endif %}{{ summary_text }}
+          </div>
         </div>
       {% endfor %}
     </div>
@@ -148,17 +299,42 @@
     }
   }
 
+  async function loadOpenAPISchema() {
+    try {
+      const resp = await fetch("/api/target-openapi");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.openapi) {
+        const rawEl = document.getElementById("openapi-preview-raw");
+        if (rawEl) {
+          rawEl.textContent = JSON.stringify(data.openapi, null, 2);
+        }
+      }
+    } catch (err) {
+      console.warn("Error loading OpenAPI schema:", err);
+    }
+  }
+
   function renderTargetState(data) {
     if (!data) return;
     const badge = document.getElementById("target-online-badge");
     if (badge) {
-      badge.textContent = data.online ? "Online (:8001)" : "Offline / Mock";
-      badge.className = "badge " + (data.online ? "badge-ok" : "badge-warn");
+      const isOnline = data.online !== false;
+      badge.textContent = isOnline ? "Online (:8001)" : "Offline / Mock";
+      badge.className = "badge " + (isOnline ? "badge-ok" : "badge-warn");
     }
 
+    const currentMode = data.chaos_mode || "normal";
     document.querySelectorAll(".segmented button").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.mode === data.chaos_mode);
+      btn.classList.toggle("active", btn.dataset.mode === currentMode);
     });
+
+    const isDrifted = currentMode === "drift_v2" || data.api_version === "v2";
+    const verBadge = document.getElementById("openapi-version-badge");
+    if (verBadge) {
+      verBadge.textContent = isDrifted ? "Target API: v2 (Drifted)" : "Target API: v1 (Standard)";
+      verBadge.className = "badge " + (isDrifted ? "badge-warn" : "badge-info");
+    }
 
     const deps = data.deployments || [];
     const depCount = document.getElementById("dep-count");
@@ -167,17 +343,34 @@
     const tbody = document.getElementById("deployments-body");
     if (tbody) {
       if (deps.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--muted); padding: 16px;">No deployments registered on target microservice.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--muted); padding: 18px;">No deployments registered on target microservice.</td></tr>';
       } else {
-        tbody.innerHTML = deps.map((d) => `
-          <tr>
-            <td><code class="mono">${FinishLineLiveRun.escapeHtml(d.deployment_id || d.id || "—")}</code></td>
-            <td><strong>${FinishLineLiveRun.escapeHtml(d.service_name || "target")}</strong></td>
-            <td><code class="mono">${FinishLineLiveRun.escapeHtml(d.branch || "—")}</code></td>
-            <td>${FinishLineLiveRun.escapeHtml(d.max_rps || d.rate_limit || "—")}</td>
-            <td><span class="badge badge-info">${FinishLineLiveRun.escapeHtml(d.api_version || "v1")}</span></td>
-          </tr>
-        `).join("");
+        tbody.innerHTML = deps.map((d) => {
+          const isActive = Boolean(d.active);
+          const activeBadge = isActive
+            ? '<span class="badge badge-ok">true</span>'
+            : '<span class="badge badge-danger">false</span>';
+          
+          let statusBadge = `<span class="badge badge-neutral">${FinishLineLiveRun.escapeHtml(d.status || "unknown")}</span>`;
+          if (d.status === "active") {
+            statusBadge = '<span class="badge badge-ok">active</span>';
+          } else if (d.status === "dropped_unverified") {
+            statusBadge = '<span class="badge badge-warn">dropped_unverified</span>';
+          }
+
+          return `
+            <tr>
+              <td><code class="mono">${FinishLineLiveRun.escapeHtml(d.deployment_id || d.id || "—")}</code></td>
+              <td><strong>${FinishLineLiveRun.escapeHtml(d.service_name || "target")}</strong></td>
+              <td><code class="mono">${FinishLineLiveRun.escapeHtml(d.branch || "—")}</code></td>
+              <td><span class="badge badge-neutral">${FinishLineLiveRun.escapeHtml(d.env_tier || "staging")}</span></td>
+              <td>${FinishLineLiveRun.escapeHtml(d.max_rps || d.rate_limit || "—")}</td>
+              <td><span class="badge badge-info">${FinishLineLiveRun.escapeHtml(d.api_version || "v1")}</span></td>
+              <td>${activeBadge}</td>
+              <td>${statusBadge}</td>
+            </tr>
+          `;
+        }).join("");
       }
     }
 
@@ -191,15 +384,17 @@
         feed.innerHTML = '<div class="empty-state">No requests recorded on target service yet.</div>';
       } else {
         feed.innerHTML = [...reqs].reverse().slice(0, 30).map((r) => {
-          const statusCls = r.status < 300 ? "badge-ok" : (r.status < 500 ? "badge-warn" : "badge-danger");
-          const bodyStr = r.body ? JSON.stringify(r.body) : "";
+          const statusNum = r.status_code !== undefined ? r.status_code : (r.status !== undefined ? r.status : 200);
+          const statusCls = statusNum < 300 ? "badge-ok" : (statusNum < 500 ? "badge-warn" : "badge-danger");
+          const summaryText = r.summary || r.detail || (r.body ? JSON.stringify(r.body) : "");
+          const timestampStr = r.ts || r.timestamp || "";
           return `
             <div class="feed-row">
               <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-                <span class="feed-type">${FinishLineLiveRun.escapeHtml(r.method)} ${FinishLineLiveRun.escapeHtml(r.path)}</span>
-                <span class="badge ${statusCls}">${r.status}</span>
+                <span class="feed-type">${FinishLineLiveRun.escapeHtml(r.method || "GET")} ${FinishLineLiveRun.escapeHtml(r.path || "/")}</span>
+                <span class="badge ${statusCls}">${statusNum}</span>
               </div>
-              <div class="feed-msg mono">${FinishLineLiveRun.escapeHtml(r.timestamp || "")} · ${FinishLineLiveRun.escapeHtml(bodyStr)}</div>
+              <div class="feed-msg mono">${timestampStr ? FinishLineLiveRun.escapeHtml(timestampStr) + " · " : ""}${FinishLineLiveRun.escapeHtml(summaryText)}</div>
             </div>
           `;
         }).join("");

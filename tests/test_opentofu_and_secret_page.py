@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from collections.abc import AsyncGenerator
@@ -277,20 +278,56 @@ async def test_super_secret_page_and_audience_controls(atlas_store: MongoStore) 
                 assert r_secret.status_code == 200
                 assert "worker-lane-canvas" in r_secret.text
                 assert "btn-audience-kill" in r_secret.text
+                # Minimal standalone illustration + single button: no operator nav links
+                assert 'href="/infra"' not in r_secret.text
+                assert 'href="/store"' not in r_secret.text
+                # Must stay unpinned by default so new runs update the page dynamically
+                assert 'const REQUESTED_RUN_ID = "";' in r_secret.text
 
                 r_topo = await ac.get("/api/docker-topology")
                 assert r_topo.status_code == 200
                 assert "workers" in r_topo.json()
 
-                # Toggle auto-respawn
+                # Toggle auto-respawn on then off before testing live kill
                 r_ar = await ac.post(
                     f"/runs/{run_id}/auto-respawn", json={"enabled": True}
                 )
                 assert r_ar.status_code == 200
                 assert r_ar.json()["auto_respawn"] is True
+                await ac.post(f"/runs/{run_id}/auto-respawn", json={"enabled": False})
 
                 # Audience kill rejects cleanly with 409 when no worker PID is active
                 r_kill_guard = await ac.post(f"/runs/{run_id}/kill?source=audience")
                 assert r_kill_guard.status_code == 409
+
+                # Dead worker_pid should not be treated as alive or active
+                await atlas_store.update_run(run_id, worker_pid=999999)
+                r_snap_dead = await ac.get(f"/api/active-run?run_id={run_id}")
+                assert r_snap_dead.status_code == 200
+                assert r_snap_dead.json()["run"]["worker_alive"] is False
+
+                # Live subprocess PID can be killed cleanly by audience SIGKILL
+                proc = await asyncio.create_subprocess_exec("sleep", "30")
+                try:
+                    await atlas_store.update_run(
+                        run_id, status=RunStatus.RUNNING.value, worker_pid=proc.pid
+                    )
+                    r_snap_live = await ac.get(f"/api/active-run?run_id={run_id}")
+                    assert r_snap_live.status_code == 200
+                    assert r_snap_live.json()["run"]["worker_alive"] is True
+
+                    r_kill_live = await ac.post(
+                        f"/runs/{run_id}/kill?source=audience"
+                    )
+                    assert r_kill_live.status_code == 200
+                    kill_data = r_kill_live.json()
+                    assert kill_data["sigkill_delivered"] is True
+                    assert kill_data["killed_pid"] == proc.pid
+                    assert kill_data["run"]["status"] == RunStatus.CRASHED.value
+                    await asyncio.wait_for(proc.wait(), timeout=3.0)
+                finally:
+                    if proc.returncode is None:
+                        proc.kill()
+                        await asyncio.wait_for(proc.wait(), timeout=3.0)
     finally:
         await _cleanup_run(atlas_store, run_id)

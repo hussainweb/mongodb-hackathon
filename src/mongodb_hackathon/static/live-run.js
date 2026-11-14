@@ -220,10 +220,11 @@
     return activeEventSource;
   }
 
-  // Auto-connect on page load if live strip exists
+  // Auto-connect on page load only when operator live strip exists
   document.addEventListener("DOMContentLoaded", function () {
     const stripEl = document.getElementById("live-run-strip");
-    const requestedRunId = stripEl ? stripEl.getAttribute("data-initial-run-id") : "";
+    if (!stripEl) return;
+    const requestedRunId = stripEl.getAttribute("data-initial-run-id") || "";
     connectLiveRun({ runId: requestedRunId });
   });
 

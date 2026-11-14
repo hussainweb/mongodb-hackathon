@@ -11,6 +11,7 @@ import sys
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -266,6 +267,7 @@ async def _build_run_snapshot(
     return {
         "run": {
             **run.model_dump(mode="json"),
+            "worker_alive": _pid_is_alive(run.worker_pid),
             "crash_count": crash_count,
             "pr_url": pr_url,
             "branch_name": branch_name,
@@ -334,19 +336,47 @@ def _deps(
     return store, github, http, settings
 
 
+def _pid_is_alive(pid: int | None) -> bool:
+    """Return True when an OS worker process with this PID currently exists."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _age_seconds(dt: datetime) -> float:
+    """Return non-negative age in seconds relative to utc_now()."""
+    aware = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+    return max(0.0, (utc_now() - aware).total_seconds())
+
+
 async def _resolve_active_run_id(
     store: MongoStore, requested_run_id: str = ""
 ) -> str:
-    """Resolve an active or requested run_id, preferring in-flight runs over completed ones."""
+    """Resolve an active or requested run_id, ignoring stale orphaned runs."""
     if requested_run_id.strip():
         return requested_run_id.strip()
     runs = await store.list_runs(limit=25)
     if not runs:
         return ""
     for r in runs:
+        if r.status == RunStatus.RUNNING and _pid_is_alive(r.worker_pid):
+            return r.run_id
+    for r in runs:
+        if r.status == RunStatus.AWAITING_APPROVAL or r.step_paused:
+            return r.run_id
+    for r in runs:
         if (
-            r.status in {RunStatus.RUNNING, RunStatus.AWAITING_APPROVAL}
-            or r.step_paused
+            r.status == RunStatus.RUNNING
+            and r.worker_pid is None
+            and _age_seconds(r.updated_at) <= 600
         ):
             return r.run_id
     return runs[0].run_id
@@ -533,6 +563,7 @@ async def super_secret_page(request: Request) -> HTMLResponse:
         "super_secret.html",
         {
             "active_page": "secret",
+            "requested_run_id": requested_run_id,
             "initial_run_id": initial_run_id,
             "initial_snapshot": initial_snapshot,
             "sandbox_repo": settings.github_sandbox_repo.strip()
@@ -1380,7 +1411,7 @@ async def stream_active_run_events(
 
         async def _pump_changes() -> None:
             try:
-                target_to_watch = fixed_run_id or current_run_id
+                target_to_watch = fixed_run_id
                 async for change in store.watch_run_stream(target_to_watch):
                     if queue.full():
                         with suppress(asyncio.QueueEmpty):

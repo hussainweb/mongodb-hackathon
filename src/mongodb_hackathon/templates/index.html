@@ -496,32 +496,6 @@
       });
     });
 
-    // 3. Custom release scenarios
-    const customScenarios = [
-      {
-        title: "Rate limit 300 & live PR",
-        prompt: "Enable resilient rate limiter on /v1/deployments callback webhook with rate_limit=300 and verify live PR + deployment.",
-      },
-      {
-        title: "Schema drift v2 adaptation",
-        prompt: "Adapt target service deployment payload to OpenAPI v2 callback_uri and max_rps schema without human intervention.",
-      },
-      {
-        title: "Downstream 202 retry verification",
-        prompt: "Verify downstream microservice registration actively took effect instead of trusting optimistic 202 Accepted status.",
-      },
-    ];
-
-    customScenarios.forEach((sc) => {
-      chipItems.push({
-        prompt: sc.prompt,
-        issueNum: 0,
-        issueTitle: sc.title,
-        prefix: "",
-        label: sc.title,
-      });
-    });
-
     if (wrap) {
       wrap.classList.toggle("hidden", chipItems.length === 0);
     }

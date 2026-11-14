@@ -446,8 +446,6 @@ async def index(request: Request) -> HTMLResponse:
             issues = await github.list_open_issues(selected_repo, limit=8)
         except (httpx.HTTPError, OSError, RuntimeError):
             issues = []
-    if not issues:
-        issues = FALLBACK_DEMO_ISSUES
 
     is_new_run = request.query_params.get("new", "").strip() in {"1", "true", "yes"}
     requested_run_id = request.query_params.get("run_id", "").strip()
@@ -699,12 +697,15 @@ async def bootstrap_sandbox(request: Request, repo: str = "") -> JSONResponse:
 
 @app.get("/api/issues")
 async def list_issues(request: Request, repo: str = "") -> JSONResponse:
-    """Return open issues from the configured GitHub sandbox repository."""
+    """Return open issues from the configured live GitHub repository (empty for dry-run)."""
     _, github, _, settings = _deps(request)
     target_repo = repo.strip() or settings.github_sandbox_repo.strip()
-    issues = await github.list_open_issues(target_repo, limit=10) if target_repo else []
-    if not issues:
-        issues = FALLBACK_DEMO_ISSUES
+    if not target_repo or target_repo.startswith("dry-run/") or not github.has_token:
+        return JSONResponse({"repo": target_repo, "issues": []})
+    try:
+        issues = await github.list_open_issues(target_repo, limit=10)
+    except (httpx.HTTPError, OSError, RuntimeError):
+        issues = []
     return JSONResponse({"repo": target_repo, "issues": issues})
 
 

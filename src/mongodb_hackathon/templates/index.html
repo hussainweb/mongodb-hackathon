@@ -278,6 +278,7 @@
 {% block scripts %}
 <script>
   let currentRunId = "{{ initial_run_id | default('') }}";
+  let currentRunRepo = "{{ initial_snapshot.run.repo if initial_snapshot and initial_snapshot.run else '' }}";
   let currentStepDelay = 0.5;
   let currentStepMode = "auto";
   let currentIssueNumber = 0;
@@ -575,6 +576,11 @@
       const firstChip = document.querySelector("#example-chips .chip");
       selectChip(firstChip, defaultPrompt, 0, "Repo Default Prompt");
     }
+
+    // Clear stale run timeline & memory banner if the displayed run belongs to a different repo
+    if (currentRunId && currentRunRepo && currentRunRepo !== repo) {
+      resetToNewRun();
+    }
   }
 
   function summarizeStep(cp) {
@@ -596,6 +602,8 @@
   function renderSnapshot(snap) {
     if (!snap || !snap.run) return;
     const run = snap.run;
+    currentRunId = run.run_id || currentRunId;
+    currentRunRepo = run.repo || "";
     const checkpoints = snap.checkpoints || [];
     const events = snap.events || [];
     const target = snap.target || {};
@@ -739,7 +747,7 @@
         const parts = [];
         parts.push(`
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
-            <strong style="font-size: 13px; color: #065f46;">MongoDB Atlas Experience Memory</strong>
+            <strong style="font-size: 13px; color: #065f46;">MongoDB Atlas Experience Memory · <span class="mono">${escapeHtml(run.repo || "")}</span></strong>
             <a href="${storeHref}" target="_blank" style="font-size: 12px; font-weight: 600; color: #047857;">Inspect in Atlas Store ↗</a>
           </div>
         `);
@@ -868,6 +876,7 @@
   function resetToNewRun() {
     connectStream("");
     currentRunId = "";
+    currentRunRepo = "";
     lastRenderedPlanId = "";
     const sel = document.getElementById("run-selector");
     if (sel) sel.value = "";

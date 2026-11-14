@@ -42,6 +42,7 @@ async def test_static_assets_serve_correctly() -> None:
         assert "connectLiveRun" in r_js.text
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_standalone_pages_and_navigation() -> None:
     """Verify /, /infra, and /store return 200 and render top navigation with open-in-new-tab links."""
@@ -169,6 +170,7 @@ async def test_standalone_pages_and_navigation() -> None:
         target_state.reset()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_active_run_api_and_sse_stream() -> None:
     """Verify /api/active-run and /api/active-run/stream return live snapshots and track runs."""
@@ -258,6 +260,7 @@ async def test_active_run_api_and_sse_stream() -> None:
         target_state.reset()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_workspace_prompt_composer_and_pacing_presets() -> None:
     """Verify GET / renders Linear-inspired prompt composer, repo selector, and demo pacing."""
@@ -330,6 +333,7 @@ async def test_workspace_prompt_composer_and_pacing_presets() -> None:
         target_state.reset()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_infra_page_api_and_interactions() -> None:
     """Verify /infra OpenAPI inspector, deployments table active badges, and chaos toggles."""
@@ -440,6 +444,7 @@ async def test_infra_page_api_and_interactions() -> None:
         target_state.reset()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_store_page_api_and_interactions() -> None:
     """Verify /store Data Explorer filters, checkpoints, service_events, and memory CRUD."""

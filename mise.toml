@@ -28,8 +28,16 @@ description = "Run ty type checker"
 run = "uv run ty check"
 
 [tasks.test]
-description = "Run pytest test suite"
+description = "Run fast offline unit tests (excludes Atlas/Docker integration and e2e)"
 run = "uv run pytest -v"
+
+[tasks.test-integration]
+description = "Run live MongoDB Atlas and integration tests"
+run = "uv run pytest -v -m integration"
+
+[tasks.test-all]
+description = "Run full unit, integration, and e2e test suite"
+run = "uv run pytest -v -m ''"
 
 [tasks.check]
 description = "Run lint, typecheck, and pytest in sequence"

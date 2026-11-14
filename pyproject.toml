@@ -47,3 +47,11 @@ python-version = "3.14"
 
 [tool.ty.src]
 exclude = [".agents/skills"]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-m 'not integration and not e2e'"
+markers = [
+    "integration: tests requiring live MongoDB Atlas or external APIs",
+    "e2e: slow end-to-end tests exercising live Docker containers and OpenTofu",
+]

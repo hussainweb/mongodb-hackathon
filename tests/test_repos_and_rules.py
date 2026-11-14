@@ -28,6 +28,8 @@ from mongodb_hackathon.target_service import app as target_app
 from mongodb_hackathon.target_service import state as target_state
 from mongodb_hackathon.worker import execute_job
 
+pytestmark = pytest.mark.integration
+
 
 @pytest_asyncio.fixture
 async def atlas_store() -> AsyncGenerator[MongoStore]:

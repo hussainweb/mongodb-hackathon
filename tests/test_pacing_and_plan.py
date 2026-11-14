@@ -61,6 +61,7 @@ def test_pacing_presets_and_defaults() -> None:
     assert run.paused_after_step == 0
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_step_by_step_pauses_at_checkpoints_and_advances() -> None:
     """Verify that step_by_step mode pauses cleanly after steps 1, 2, and 3, and advances upon operator request."""
@@ -177,6 +178,7 @@ async def test_step_by_step_pauses_at_checkpoints_and_advances() -> None:
         target_state.reset()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_step_1_fix_plan_edit_takes_effect_on_step_2_and_3() -> None:
     """Verify operator editing FixPlan fields while paused after Step 1 propagates to Step 2 and 3."""
@@ -313,6 +315,7 @@ async def test_step_1_fix_plan_edit_takes_effect_on_step_2_and_3() -> None:
         target_state.reset()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_replan_prompt_and_plan_edit_guards() -> None:
     """Verify replan_prompt re-evaluates FixPlan and endpoint enforces pause / step-1 guards."""
@@ -422,6 +425,7 @@ async def test_replan_prompt_and_plan_edit_guards() -> None:
         target_state.reset()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_advance_handles_crashed_status() -> None:
     """Verify /runs/{run_id}/advance unpauses and sets status back to RUNNING if marked CRASHED."""

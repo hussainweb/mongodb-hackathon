@@ -79,6 +79,7 @@ async def test_pydantic_ai_testmodel_planner_and_drift_adapter() -> None:
     assert drift.adapted_payload["idempotency_key"] == "preserve-me"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_worker_catches_silent_202_and_completes(atlas_store: MongoStore) -> None:
     """Worker detects 202 silent drop via /verify probe, retries idempotently, and verifies."""
@@ -119,6 +120,7 @@ async def test_worker_catches_silent_202_and_completes(atlas_store: MongoStore) 
         target_state.reset()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_worker_adapts_to_v2_drift(atlas_store: MongoStore) -> None:
     """Worker detects 422 drift on /v1/deployments, retrieves playbooks, and succeeds on /v2."""
@@ -160,6 +162,7 @@ async def test_worker_adapts_to_v2_drift(atlas_store: MongoStore) -> None:
         target_state.reset()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_worker_resumes_after_crash_without_duplicate_steps(
     atlas_store: MongoStore,
@@ -251,6 +254,7 @@ async def test_worker_resumes_after_crash_without_duplicate_steps(
         target_state.reset()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_compensating_rollback_removes_deployment(
     atlas_store: MongoStore,
@@ -304,6 +308,7 @@ async def test_audio_dir_matches_package_static_mount() -> None:
     assert AUDIO_DIR.parts[-3:] == ("mongodb_hackathon", "static", "audio")
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_approval_gate_and_freeform_issue_zero(
     atlas_store: MongoStore,

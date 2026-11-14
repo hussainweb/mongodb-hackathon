@@ -13,6 +13,8 @@ from mongodb_hackathon.mongo import MongoStore
 from mongodb_hackathon.target_service import app as target_app
 from mongodb_hackathon.target_service import state as target_state
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.asyncio
 async def test_control_room_run_lifecycle_and_memory_invalidation() -> None:

@@ -99,6 +99,8 @@ async def test_multi_structure_repo_discovery_chooses_correct_tf_paths() -> None
     assert plan_c.patch_filename == "service_config.json"
 
 
+@pytest.mark.e2e
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_stale_lock_cleanup_and_live_opentofu_docker_lifecycle(
     atlas_store: MongoStore,
@@ -167,6 +169,7 @@ async def test_stale_lock_cleanup_and_live_opentofu_docker_lifecycle(
         await _cleanup_run(atlas_store, run_id)
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_opentofu_worker_pipeline_with_mocked_tofu(
     atlas_store: MongoStore, monkeypatch: pytest.MonkeyPatch
@@ -244,6 +247,7 @@ async def test_opentofu_worker_pipeline_with_mocked_tofu(
         await _cleanup_run(atlas_store, run_id)
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_super_secret_page_and_audience_controls(atlas_store: MongoStore) -> None:
     """Verify /super-secret-page renders, /api/docker-topology responds, and audience kill guards work."""
@@ -331,3 +335,79 @@ async def test_super_secret_page_and_audience_controls(atlas_store: MongoStore) 
                         await asyncio.wait_for(proc.wait(), timeout=3.0)
     finally:
         await _cleanup_run(atlas_store, run_id)
+
+
+@pytest.mark.asyncio
+async def test_super_secret_page_and_active_run_resolution_unit() -> None:
+    """Offline unit check for /super-secret-page standalone HTML, dead-PID filtering, and SSE pinning."""
+    from datetime import UTC, datetime, timedelta
+
+    stale_orphan = JobRun(
+        run_id="stale-orphan",
+        repo="dry-run/payments-infra",
+        issue_number=0,
+        issue_title="Stale orphan",
+        issue_body="Old stuck run",
+        target_service_url="http://test-target",
+        status=RunStatus.RUNNING,
+        worker_pid=999999,
+        updated_at=datetime.now(UTC) - timedelta(hours=2),
+    )
+    recent_completed = JobRun(
+        run_id="recent-completed",
+        repo="dry-run/payments-infra",
+        issue_number=0,
+        issue_title="Recent done",
+        issue_body="Finished cleanly",
+        target_service_url="http://test-target",
+        status=RunStatus.COMPLETED,
+        worker_pid=None,
+        updated_at=datetime.now(UTC),
+    )
+
+    class _FakeStore:
+        def __init__(self, runs: list[JobRun]) -> None:
+            self._runs = {r.run_id: r for r in runs}
+            self._order = runs
+
+        async def list_runs(self, limit: int = 25) -> list[JobRun]:
+            return self._order[:limit]
+
+        async def get_run(self, run_id: str) -> JobRun | None:
+            return self._runs.get(run_id)
+
+        async def get_checkpoints(self, run_id: str) -> list[Any]:
+            return []
+
+        async def list_events(self, run_id: str, limit: int = 40) -> list[Any]:
+            return []
+
+    fake_store: Any = _FakeStore([recent_completed, stale_orphan])
+    resolved = await ctrl_mod._resolve_active_run_id(fake_store)
+    assert resolved == "recent-completed"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=target_app), base_url="http://test-target"
+    ) as tc:
+        ctrl_mod.app.state._external_store = True
+        ctrl_mod.app.state.store = fake_store
+        ctrl_mod.app.state.settings = Settings()
+        ctrl_mod.app.state.github = GitHubSandboxAdapter(Settings(), token="")
+        ctrl_mod.app.state.target_client = tc
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=ctrl_mod.app),
+            base_url="http://test-control",
+        ) as ac:
+            r_secret = await ac.get("/super-secret-page")
+            assert r_secret.status_code == 200
+            assert "worker-lane-canvas" in r_secret.text
+            assert "btn-audience-kill" in r_secret.text
+            assert 'href="/infra"' not in r_secret.text
+            assert 'href="/store"' not in r_secret.text
+            assert 'const REQUESTED_RUN_ID = "";' in r_secret.text
+
+            r_active = await ac.get("/api/active-run")
+            assert r_active.status_code == 200
+            assert r_active.json()["run"]["run_id"] == "recent-completed"
+            assert r_active.json()["run"]["worker_alive"] is False

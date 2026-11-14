@@ -7,15 +7,75 @@ from typing import Any
 
 import httpx
 
+from mongodb_hackathon.config import Settings
 from mongodb_hackathon.embeddings import embed_text
-from mongodb_hackathon.models import ExperienceMemory
+from mongodb_hackathon.models import DemoRepo, ExperienceMemory
 from mongodb_hackathon.mongo import MongoStore
+
+STARTER_REPOS: list[dict[str, Any]] = [
+    {
+        "repo": "dry-run/payments-webhook",
+        "label": "Payments Webhook (Dry-Run)",
+        "description": (
+            "High-throughput payment webhook relay and rate-limited deployment pipeline (local dry-run)."
+        ),
+        "is_live": False,
+        "default_prompt": (
+            "Enable resilient rate limiter on /v1/deployments callback webhook with safe "
+            "rate_limit=300 and verify downstream acceptance."
+        ),
+    },
+    {
+        "repo": "dry-run/billing-worker",
+        "label": "Billing Worker (Dry-Run)",
+        "description": (
+            "Async invoice and billing reconciliation worker with strict staging concurrency caps (local dry-run)."
+        ),
+        "is_live": False,
+        "default_prompt": (
+            "Harden billing worker retry backoff and verify deployment health before promoting release."
+        ),
+    },
+]
+
+REPO_RULES: list[dict[str, Any]] = [
+    {
+        "memory_id": "rule-payments-webhook-rate-limit",
+        "kind": "repo_rule",
+        "source_repo": "dry-run/payments-webhook",
+        "title": "Payments Webhook: cap staging rate_limit <= 300 and verify callback URI",
+        "content": (
+            "Repo rule for dry-run/payments-webhook: staging webhook deployments must cap "
+            "rate_limit <= 300 (or max_rps <= 300) and route callbacks through verified ingest URI."
+        ),
+        "resolution": (
+            "Configure service_config.json with service_name='payments-webhook', rate_limit=300, "
+            "and verify downstream active=true before opening PR."
+        ),
+        "field_mapping": {"service_name": "payments-webhook", "rate_limit_max": "300"},
+    },
+    {
+        "memory_id": "rule-billing-worker-canary-batch",
+        "kind": "repo_rule",
+        "source_repo": "dry-run/billing-worker",
+        "title": "Billing Worker: enforce canary batch limit 150 and idempotent verification",
+        "content": (
+            "Repo rule for dry-run/billing-worker: billing reconciliation jobs must use conservative "
+            "rate_limit=150, service_name='billing-worker', and confirm active=true before issue close."
+        ),
+        "resolution": (
+            "Set service_name='billing-worker' and conservative rate_limit=150 in service_config.json, "
+            "and verify GET /verify/{deployment_id} returns active=true."
+        ),
+        "field_mapping": {"service_name": "billing-worker", "rate_limit_max": "150"},
+    },
+]
 
 DRIFT_PLAYBOOKS: list[dict[str, Any]] = [
     {
         "memory_id": "drift-deployments-v1-to-v2",
         "kind": "drift_playbook",
-        "source_repo": "finishline/target-service",
+        "source_repo": "*",
         "title": "Deployments API v1 -> v2 contract migration (callback_uri & max_rps)",
         "content": (
             "HTTP 422 or 404 on /v1/deployments when target service upgrades to v2. "
@@ -36,7 +96,7 @@ DRIFT_PLAYBOOKS: list[dict[str, Any]] = [
     {
         "memory_id": "drift-silent-202-verification",
         "kind": "drift_playbook",
-        "source_repo": "finishline/target-service",
+        "source_repo": "*",
         "title": "Async 202 Accepted silent drop verification pattern",
         "content": (
             "Deployment POST returns 202 Accepted with a deployment_id, indicating queued work, "
@@ -53,7 +113,7 @@ DRIFT_PLAYBOOKS: list[dict[str, Any]] = [
     {
         "memory_id": "drift-github-label-rename",
         "kind": "drift_playbook",
-        "source_repo": "github/governance",
+        "source_repo": "*",
         "title": "GitHub label taxonomy shift (bug -> type:bug, release-blocker -> priority:p1)",
         "content": (
             "Repository label automation fails or skips when repo migrates flat labels like bug or "
@@ -116,14 +176,66 @@ async def fetch_real_github_issues(limit_per_repo: int = 8) -> list[dict[str, An
     return records
 
 
+def _build_starter_repos(sandbox_repo: str) -> tuple[list[DemoRepo], list[dict[str, Any]]]:
+    """Assemble curated starter repos and per-repo governance rules."""
+    repos = [DemoRepo(**item) for item in STARTER_REPOS]
+    rules = list(REPO_RULES)
+    clean_sandbox = sandbox_repo.strip()
+    if clean_sandbox and not any(r.repo == clean_sandbox for r in repos):
+        is_live = not clean_sandbox.startswith("dry-run/")
+        repos.append(
+            DemoRepo(
+                repo=clean_sandbox,
+                label=f"{clean_sandbox} ({'Live Sandbox' if is_live else 'Dry-Run'})",
+                description=(
+                    "Live GitHub sandbox repository for real branch, commit, PR, comment, and label execution."
+                    if is_live
+                    else "Configured sandbox repository for Track 3 verification."
+                ),
+                is_live=is_live,
+                default_prompt=(
+                    "Enable resilient rate limiter on /v1/deployments callback webhook with "
+                    "rate_limit=300 and verify live PR + deployment."
+                ),
+            )
+        )
+        rules.append(
+            {
+                "memory_id": f"rule-{clean_sandbox.replace('/', '-')}-sandbox-guard",
+                "kind": "repo_rule",
+                "source_repo": clean_sandbox,
+                "title": f"{clean_sandbox}: verify live PR and staging deployment before issue close",
+                "content": (
+                    f"Repo rule for {clean_sandbox}: never close an issue or mark PR ready until "
+                    "service_config.json patch is committed, target deployment returns active=true, "
+                    "and PR proof comment is posted."
+                ),
+                "resolution": (
+                    "Commit service_config.json to feature branch, verify downstream active=true, "
+                    "open PR, and attach proof comment + verified label."
+                ),
+                "field_mapping": {"env_tier": "staging", "require_pr_proof": "true"},
+            }
+        )
+    return repos, rules
+
+
 async def seed_atlas(store: MongoStore | None = None) -> dict[str, Any]:
-    """Initialize Atlas schemas/indexes and upsert real GitHub + drift experience memories."""
+    """Initialize Atlas schemas/indexes, curated demo_repos, and Vector Search memories."""
     own_store = store is None
     db_store = store or MongoStore()
     try:
         schema_info = await db_store.ensure_schema_and_indexes()
+        sandbox_repo = (
+            db_store.settings.github_sandbox_repo.strip()
+            or Settings().github_sandbox_repo.strip()
+        )
+        starter_repos, repo_rules = _build_starter_repos(sandbox_repo)
+        for repo_entry in starter_repos:
+            await db_store.upsert_repo(repo_entry)
+
         github_items = await fetch_real_github_issues(limit_per_repo=8)
-        all_items = DRIFT_PLAYBOOKS + github_items
+        all_items = DRIFT_PLAYBOOKS + repo_rules + github_items
 
         inserted = 0
         for item in all_items:
@@ -139,17 +251,15 @@ async def seed_atlas(store: MongoStore | None = None) -> dict[str, Any]:
                 field_mapping=item.get("field_mapping", {}),
                 embedding=embedding,
             )
-            await db_store.memories.update_one(
-                {"memory_id": mem.memory_id},
-                {"$set": mem.model_dump(mode="python")},
-                upsert=True,
-            )
+            await db_store.upsert_memory(mem)
             inserted += 1
 
         return {
             "schema": schema_info,
             "seeded_total": inserted,
+            "repos_seeded": len(starter_repos),
             "drift_playbooks": len(DRIFT_PLAYBOOKS),
+            "repo_rules": len(repo_rules),
             "github_issues": len(github_items),
         }
     finally:

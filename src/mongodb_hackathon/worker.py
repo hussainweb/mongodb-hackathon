@@ -218,8 +218,9 @@ async def _execute_job_impl(
             )
             memories = await db_store.search_experience(
                 f"{run.issue_title}\n{run.issue_body}",
-                kind="github_fix",
+                kind=["repo_rule", "github_fix"],
                 limit=3,
+                source_repo=run.repo,
             )
             fix_plan = await plan_release_fix(
                 issue_number=run.issue_number,
@@ -414,6 +415,7 @@ async def _execute_job_impl(
                         f"API contract drift 422 {err_body}",
                         kind="drift_playbook",
                         limit=3,
+                        source_repo=run.repo,
                     )
                     adapt_plan = await adapt_to_schema_drift(
                         error_detail=err_body,
@@ -638,11 +640,7 @@ async def _execute_job_impl(
                 resolution=cp3.adaptation_used,
                 embedding=emb,
             )
-            await db_store.memories.update_one(
-                {"memory_id": learned_id},
-                {"$set": mem.model_dump(mode="python")},
-                upsert=True,
-            )
+            await db_store.upsert_memory(mem)
 
         cp5 = StepCheckpoint(
             run_id=run_id,

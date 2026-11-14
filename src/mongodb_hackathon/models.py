@@ -90,11 +90,22 @@ class JobRun(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class DemoRepo(BaseModel):
+    """Curated repository entry stored in the MongoDB Atlas `demo_repos` registry."""
+
+    repo: str
+    label: str
+    description: str = ""
+    is_live: bool = False
+    default_prompt: str = ""
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class ExperienceMemory(BaseModel):
-    """Past fix or OpenAPI schema-drift playbook stored for Vector Search recall."""
+    """Past fix, repo rule, or OpenAPI schema-drift playbook stored for Vector Search recall."""
 
     memory_id: str
-    kind: str  # "github_fix" | "drift_playbook"
+    kind: str  # "github_fix" | "drift_playbook" | "repo_rule"
     source_repo: str
     title: str
     content: str

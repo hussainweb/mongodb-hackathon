@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from pymongo import ASCENDING, DESCENDING, AsyncMongoClient
@@ -14,6 +14,8 @@ from pymongo.operations import SearchIndexModel
 from mongodb_hackathon.config import Settings, get_settings
 from mongodb_hackathon.embeddings import embed_text
 from mongodb_hackathon.models import (
+    DemoRepo,
+    ExperienceMemory,
     JobRun,
     ServiceEvent,
     StepCheckpoint,
@@ -22,6 +24,19 @@ from mongodb_hackathon.models import (
 )
 
 VECTOR_INDEX_NAME = "experience_vector_idx"
+
+
+def _search_index_has_filter(idx_doc: Mapping[str, Any], field_path: str) -> bool:
+    """Return True if an Atlas Search index definition already indexes `field_path`."""
+    for def_key in ("latestDefinition", "definition"):
+        defn = idx_doc.get(def_key)
+        if isinstance(defn, Mapping):
+            fields = defn.get("fields", [])
+            if isinstance(fields, list) and any(
+                isinstance(f, Mapping) and f.get("path") == field_path for f in fields
+            ):
+                return True
+    return False
 
 STEP_CHECKPOINT_VALIDATOR: dict[str, Any] = {
     "$jsonSchema": {
@@ -93,6 +108,10 @@ class MongoStore:
     def events(self) -> AsyncCollection[dict[str, Any]]:
         return self.db["service_events"]
 
+    @property
+    def repos(self) -> AsyncCollection[dict[str, Any]]:
+        return self.db["demo_repos"]
+
     async def close(self) -> None:
         if self._client is not None:
             await self._client.close()
@@ -135,6 +154,11 @@ class MongoStore:
 
         await self.memories.create_index([("memory_id", ASCENDING)], unique=True)
         await self.memories.create_index([("kind", ASCENDING), ("status", ASCENDING)])
+        await self.memories.create_index(
+            [("source_repo", ASCENDING), ("created_at", DESCENDING)]
+        )
+
+        await self.repos.create_index([("repo", ASCENDING)], unique=True)
 
         await self.events.create_index(
             [("run_id", ASCENDING), ("created_at", ASCENDING)]
@@ -144,30 +168,42 @@ class MongoStore:
             [("expires_at", ASCENDING)], expireAfterSeconds=0
         )
 
+        vector_definition: dict[str, Any] = {
+            "fields": [
+                {
+                    "type": "vector",
+                    "path": "embedding",
+                    "numDimensions": self.settings.embedding_dimensions,
+                    "similarity": "dotProduct",
+                },
+                {"type": "filter", "path": "kind"},
+                {"type": "filter", "path": "status"},
+                {"type": "filter", "path": "source_repo"},
+            ]
+        }
+        model = SearchIndexModel(
+            definition=vector_definition,
+            name=VECTOR_INDEX_NAME,
+            type="vectorSearch",
+        )
+
         vector_status = "already_exists"
         try:
             existing_search = [
                 idx async for idx in await self.memories.list_search_indexes()
             ]
-            if not any(idx.get("name") == VECTOR_INDEX_NAME for idx in existing_search):
-                model = SearchIndexModel(
-                    definition={
-                        "fields": [
-                            {
-                                "type": "vector",
-                                "path": "embedding",
-                                "numDimensions": self.settings.embedding_dimensions,
-                                "similarity": "dotProduct",
-                            },
-                            {"type": "filter", "path": "kind"},
-                            {"type": "filter", "path": "status"},
-                        ]
-                    },
-                    name=VECTOR_INDEX_NAME,
-                    type="vectorSearch",
-                )
+            existing_idx = next(
+                (idx for idx in existing_search if idx.get("name") == VECTOR_INDEX_NAME),
+                None,
+            )
+            if existing_idx is None:
                 await self.memories.create_search_index(model=model)
                 vector_status = "created"
+            elif not _search_index_has_filter(existing_idx, "source_repo"):
+                await self.memories.update_search_index(
+                    VECTOR_INDEX_NAME, vector_definition
+                )
+                vector_status = "updated"
         except OperationFailure as exc:
             vector_status = f"skipped:{exc.code}"
 
@@ -259,17 +295,70 @@ class MongoStore:
         items.reverse()
         return items
 
+    async def list_repos(self) -> list[DemoRepo]:
+        """Return curated repositories registered in MongoDB Atlas `demo_repos`."""
+        cursor = self.repos.find({}, {"_id": 0}).sort("created_at", ASCENDING)
+        return [DemoRepo.model_validate(doc) async for doc in cursor]
+
+    async def upsert_repo(self, repo: DemoRepo) -> DemoRepo:
+        """Insert or update a curated repository entry in `demo_repos`."""
+        payload = repo.model_dump(mode="python")
+        created_at = payload.pop("created_at", utc_now())
+        await self.repos.update_one(
+            {"repo": repo.repo},
+            {"$set": payload, "$setOnInsert": {"created_at": created_at}},
+            upsert=True,
+        )
+        doc = await self.repos.find_one({"repo": repo.repo}, {"_id": 0})
+        return DemoRepo.model_validate(doc) if doc else repo
+
+    async def upsert_memory(self, mem: ExperienceMemory) -> ExperienceMemory:
+        """Insert or update an ExperienceMemory document by `memory_id`."""
+        await self.memories.update_one(
+            {"memory_id": mem.memory_id},
+            {"$set": mem.model_dump(mode="python")},
+            upsert=True,
+        )
+        return mem
+
+    async def list_memories(
+        self,
+        source_repo: str | None = None,
+        limit: int = 40,
+        include_global: bool = False,
+    ) -> list[dict[str, Any]]:
+        """List experience memories (without raw embedding vectors), newest first."""
+        query: dict[str, Any] = {}
+        if source_repo:
+            if include_global:
+                query["source_repo"] = {"$in": list(dict.fromkeys([source_repo, "*"]))}
+            else:
+                query["source_repo"] = source_repo
+        return (
+            await self.memories.find(query, {"_id": 0, "embedding": 0})
+            .sort("created_at", DESCENDING)
+            .to_list(length=limit)
+        )
+
     async def search_experience(
         self,
         query: str,
-        kind: str | None = None,
+        kind: str | list[str] | None = None,
         limit: int = 4,
+        source_repo: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Query Atlas Vector Search with active-status pre-filter, with dot-product fallback."""
+        """Query Atlas Vector Search with active-status and source_repo pre-filters, with dot-product fallback."""
         query_vector = await embed_text(query, self.settings)
         pre_filter: dict[str, Any] = {"status": "active"}
-        if kind:
+        if isinstance(kind, list):
+            if kind:
+                pre_filter["kind"] = {"$in": kind}
+        elif kind:
             pre_filter["kind"] = kind
+        if source_repo:
+            pre_filter["source_repo"] = {
+                "$in": list(dict.fromkeys([source_repo, "*"]))
+            }
 
         pipeline: list[dict[str, Any]] = [
             {
@@ -305,8 +394,8 @@ class MongoStore:
         except OperationFailure:
             pass
 
-        # Fallback if search index is still warming up right after creation
-        docs = await self.memories.find(pre_filter, {"_id": 0}).to_list(length=100)
+        # Fallback if search index is still warming up or updating
+        docs = await self.memories.find(pre_filter, {"_id": 0}).to_list(length=500)
         scored: list[tuple[float, dict[str, Any]]] = []
         for doc in docs:
             emb = doc.get("embedding", [])

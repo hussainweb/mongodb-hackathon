@@ -12,7 +12,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -25,8 +25,16 @@ from pydantic import BaseModel, Field
 from pymongo.errors import PyMongoError
 
 from mongodb_hackathon.config import Settings, get_settings
+from mongodb_hackathon.embeddings import embed_text
 from mongodb_hackathon.github_adapter import GitHubSandboxAdapter
-from mongodb_hackathon.models import ChaosMode, JobRun, RunStatus, utc_now
+from mongodb_hackathon.models import (
+    ChaosMode,
+    DemoRepo,
+    ExperienceMemory,
+    JobRun,
+    RunStatus,
+    utc_now,
+)
 from mongodb_hackathon.mongo import MongoStore
 from mongodb_hackathon.seed import seed_atlas
 from mongodb_hackathon.voice import transcribe_operator_audio
@@ -75,6 +83,30 @@ class ApproveRunRequest(BaseModel):
     """Text approval payload when no audio recording is uploaded."""
 
     note: str = "Approved by operator"
+
+
+class CreateRepoRequest(BaseModel):
+    """Request payload to register a repository in `demo_repos`."""
+
+    repo: str = ""
+    label: str = ""
+    description: str = ""
+    is_live: bool | None = None
+    default_prompt: str = ""
+    create_sandbox: bool = False
+
+
+class CreateMemoryRequest(BaseModel):
+    """Request payload to embed and save a scoped repo rule or drift playbook."""
+
+    memory_id: str = ""
+    kind: Literal["repo_rule", "drift_playbook", "github_fix"] = "repo_rule"
+    source_repo: str = "*"
+    title: str
+    content: str
+    resolution: str = ""
+    field_mapping: dict[str, str] = Field(default_factory=dict)
+    status: Literal["active", "invalidated"] = "active"
 
 
 def _spawn_worker_process(run_id: str, step_delay: float = 0.8) -> int:
@@ -219,11 +251,7 @@ async def index(request: Request) -> HTMLResponse:
     store, github, http, settings = _deps(request)
     runs = await store.list_runs(limit=15)
     target = await _fetch_target_state(http)
-    memories = (
-        await store.memories.find({}, {"_id": 0, "embedding": 0})
-        .sort("updated_at", -1)
-        .to_list(length=12)
-    )
+    memories = await store.list_memories(limit=12)
 
     repo = settings.github_sandbox_repo.strip()
     issues: list[dict[str, Any]] = []
@@ -607,16 +635,113 @@ async def get_target_state(request: Request) -> JSONResponse:
     return JSONResponse(await _fetch_target_state(http))
 
 
+@app.get("/api/repos")
+async def list_repos(request: Request) -> JSONResponse:
+    """List curated demo/sandbox repositories from MongoDB Atlas `demo_repos`."""
+    store, _, _, _ = _deps(request)
+    repos = await store.list_repos()
+    return JSONResponse({"repos": [r.model_dump(mode="json") for r in repos]})
+
+
+@app.post("/api/repos")
+async def register_repo(request: Request, body: CreateRepoRequest) -> JSONResponse:
+    """Register a repository in `demo_repos`, optionally creating the GitHub sandbox repo."""
+    store, github, _, _ = _deps(request)
+    repo_slug = body.repo.strip()
+    sandbox_info: dict[str, Any] | None = None
+
+    if body.create_sandbox:
+        if not github.has_token:
+            raise HTTPException(
+                status_code=400,
+                detail="No GitHub token available (`GITHUB_TOKEN` or `gh auth login`).",
+            )
+        if repo_slug and ("/" not in repo_slug or " " in repo_slug):
+            raise HTTPException(
+                status_code=400, detail="repo must be in 'owner/name' format"
+            )
+        try:
+            sandbox_info = await github.ensure_sandbox_repo(repo_slug)
+        except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Failed to ensure sandbox repo: {exc}"
+            ) from exc
+        resolved_repo = str(sandbox_info.get("repo", repo_slug)).strip()
+    else:
+        if not repo_slug or "/" not in repo_slug or " " in repo_slug:
+            raise HTTPException(
+                status_code=400, detail="repo must be in 'owner/name' format"
+            )
+        resolved_repo = repo_slug
+
+    is_live = (
+        body.is_live
+        if body.is_live is not None
+        else not resolved_repo.startswith("dry-run/")
+    )
+    entry = DemoRepo(
+        repo=resolved_repo,
+        label=body.label.strip() or resolved_repo,
+        description=body.description.strip(),
+        is_live=is_live,
+        default_prompt=body.default_prompt.strip(),
+    )
+    saved = await store.upsert_repo(entry)
+    return JSONResponse(
+        {"repo": saved.model_dump(mode="json"), "sandbox": sandbox_info},
+        status_code=201,
+    )
+
+
 @app.get("/api/memories")
-async def list_memories(request: Request) -> JSONResponse:
+async def list_memories(
+    request: Request,
+    source_repo: str = "",
+    limit: int = 40,
+    include_global: bool = False,
+) -> JSONResponse:
     """List Atlas Vector Search experience memories (without raw float vectors)."""
     store, _, _, _ = _deps(request)
-    docs = (
-        await store.memories.find({}, {"_id": 0, "embedding": 0})
-        .sort("updated_at", -1)
-        .to_list(length=20)
+    bounded_limit = max(1, min(limit, 200))
+    docs = await store.list_memories(
+        source_repo=source_repo.strip() or None,
+        limit=bounded_limit,
+        include_global=include_global,
     )
     return JSONResponse({"memories": jsonable_encoder(docs)})
+
+
+@app.post("/api/memories")
+async def create_memory(request: Request, body: CreateMemoryRequest) -> JSONResponse:
+    """Embed and persist a new scoped repo rule or drift playbook in MongoDB Atlas."""
+    store, _, _, settings = _deps(request)
+    title = body.title.strip()
+    content = body.content.strip()
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="title and content must be non-empty")
+
+    resolution = body.resolution.strip() or content
+    source_repo = body.source_repo.strip() or "*"
+    memory_id = body.memory_id.strip() or f"{body.kind}-{uuid.uuid4().hex[:10]}"
+    emb_text = f"{title}\n{content}\n{resolution}"
+    embedding = await embed_text(emb_text, settings)
+
+    mem = ExperienceMemory(
+        memory_id=memory_id,
+        kind=body.kind,
+        source_repo=source_repo,
+        title=title,
+        content=content,
+        resolution=resolution,
+        field_mapping=body.field_mapping,
+        status=body.status,
+        embedding=embedding,
+    )
+    await store.upsert_memory(mem)
+    return JSONResponse(
+        {"memory": mem.model_dump(mode="json", exclude={"embedding"})},
+        status_code=201,
+    )
 
 
 @app.post("/memories/{memory_id}/invalidate")

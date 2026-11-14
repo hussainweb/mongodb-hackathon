@@ -316,15 +316,27 @@ async def _execute_opentofu_step3(
                 settings=cfg,
                 model_override=model_override,
             )
+            recalled_titles = [
+                str(p.get("title") or p.get("memory_id") or "")
+                for p in playbooks
+                if p.get("title") or p.get("memory_id")
+            ]
             cp3.status = StepStatus.ADAPTED
             cp3.adaptation_used = adapt_plan.diagnosis
+            cp3.post_state = {
+                **(cp3.post_state or {}),
+                "recalled_memories": recalled_titles,
+            }
             await db_store.upsert_checkpoint_atomic(cp3)
             await db_store.emit_event(
                 run_id,
                 "step_3_deploy_and_verify",
                 "drift_adapted",
                 f"Adapted OpenTofu container env to v2 contract: {adapt_plan.field_mapping}",
-                {"mapping": adapt_plan.field_mapping},
+                {
+                    "mapping": adapt_plan.field_mapping,
+                    "recalled_memories": recalled_titles,
+                },
             )
             use_v2_env = True
             await asyncio.sleep(0.3)
@@ -481,8 +493,17 @@ async def _execute_http_step3(
                 if not approved:
                     return False, "", {}
 
+            recalled_titles = [
+                str(p.get("title") or p.get("memory_id") or "")
+                for p in playbooks
+                if p.get("title") or p.get("memory_id")
+            ]
             cp3.status = StepStatus.ADAPTED
             cp3.adaptation_used = adapt_plan.diagnosis
+            cp3.post_state = {
+                **(cp3.post_state or {}),
+                "recalled_memories": recalled_titles,
+            }
             await db_store.upsert_checkpoint_atomic(cp3)
             await db_store.emit_event(
                 run_id,
@@ -492,6 +513,7 @@ async def _execute_http_step3(
                 {
                     "mapping": adapt_plan.field_mapping,
                     "diagnosis": adapt_plan.diagnosis,
+                    "recalled_memories": recalled_titles,
                 },
             )
             adapted_payload = dict(adapt_plan.adapted_payload)
@@ -913,6 +935,7 @@ async def _execute_job_impl(
 
         # --- STEP 5: Persist Learned Experience & Complete ---
         summary = f"Completed all 5 stages cleanly. PR: {pr_url} | Deployment: {dep_id}"
+        learned_memory_info: dict[str, Any] | None = None
         if cp3.adaptation_used:
             learned_id = f"learned-{run_id}"
             learned_text = f"Recovered from contract drift during {run.repo}#{run.issue_number}: {cp3.adaptation_used}"
@@ -927,6 +950,24 @@ async def _execute_job_impl(
                 embedding=emb,
             )
             await db_store.upsert_memory(mem)
+            learned_memory_info = {
+                "memory_id": learned_id,
+                "title": mem.title,
+                "kind": mem.kind,
+                "source_repo": mem.source_repo,
+                "resolution": mem.resolution,
+            }
+            await db_store.emit_event(
+                run_id,
+                "step_5_finalize",
+                "memory_persisted",
+                f"Saved learned drift playbook to Atlas Vector Search: {mem.title}",
+                learned_memory_info,
+            )
+
+        cp5_post: dict[str, Any] = {"summary": summary}
+        if learned_memory_info:
+            cp5_post["learned_memory"] = learned_memory_info
 
         cp5 = StepCheckpoint(
             run_id=run_id,
@@ -937,7 +978,7 @@ async def _execute_job_impl(
             status=StepStatus.VERIFIED_TOOK_EFFECT,
             attempts=1,
             took_effect=True,
-            post_state={"summary": summary},
+            post_state=cp5_post,
             updated_at=utc_now(),
         )
         await db_store.upsert_checkpoint_atomic(cp5, run_step=5)

@@ -474,3 +474,60 @@ async def test_samples_api_and_infra_page_rendering() -> None:
             assert "Demo Sample Repositories (Docker + OpenTofu)" in r_infra.text
             assert "startSampleDocker('payments-infra'" in r_infra.text
             assert "publishSampleGithub('billing-stack'" in r_infra.text
+
+
+@pytest.mark.asyncio
+async def test_workspace_renders_memory_activity_banner_and_callouts() -> None:
+    """Verify / includes the prominent Atlas memory activity banner and step memory callouts."""
+    import mongodb_hackathon.app as ctrl_mod
+
+    class _MinStore:
+        async def list_runs(self, limit: int = 25) -> list[Any]:
+            return []
+
+        async def get_run(self, run_id: str) -> Any:
+            return None
+
+        async def list_repos(self) -> list[Any]:
+            return []
+
+        async def list_memories(self, limit: int = 12) -> list[Any]:
+            return []
+
+        async def aggregate_repo_rule_counts(self) -> dict[str, int]:
+            return {}
+
+        @property
+        def memories(self) -> Any:
+            class _EmptyColl:
+                async def aggregate(self, *args: Any, **kwargs: Any) -> Any:
+                    class _Cursor:
+                        def __aiter__(self) -> _Cursor:
+                            return self
+
+                        async def __anext__(self) -> Any:
+                            raise StopAsyncIteration
+
+                    return _Cursor()
+
+            return _EmptyColl()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=target_app), base_url="http://test-target"
+    ) as tc:
+        ctrl_mod.app.state._external_store = True
+        ctrl_mod.app.state.store = _MinStore()
+        ctrl_mod.app.state.settings = Settings()
+        ctrl_mod.app.state.github = GitHubSandboxAdapter(Settings(), token="")
+        ctrl_mod.app.state.target_client = tc
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=ctrl_mod.app),
+            base_url="http://test-control",
+        ) as ac:
+            r_home = await ac.get("/")
+            assert r_home.status_code == 200
+            assert 'id="memory-activity-banner"' in r_home.text
+            assert "Used Atlas Memory:" in r_home.text
+            assert "Saved Learned Memory:" in r_home.text
+            assert "New Memory Saved" in r_home.text

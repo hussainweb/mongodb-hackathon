@@ -192,6 +192,9 @@
       <div id="record-status" style="font-size: 12px; color: var(--muted);"></div>
     </div>
 
+    <!-- Atlas Vector Search Memory Banner (Recalled & Learned) -->
+    <div id="memory-activity-banner" class="hidden" style="border: 1px solid #a7f3d0; background: #ecfdf5; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;" aria-live="polite"></div>
+
     <!-- 5-Step Verification Timeline -->
     <div id="step-list" class="steps">
       <div class="empty-state">Select or compose a release prompt above and click <strong>Run Release Closer</strong>.</div>
@@ -649,6 +652,64 @@
       }
     }
 
+    // Atlas Vector Search Memory Banner (Recalled & Learned)
+    const memBanner = document.getElementById("memory-activity-banner");
+    if (memBanner) {
+      const recalledAll = [];
+      const seenTitles = new Set();
+      let learnedMem = null;
+      for (const cp of checkpoints) {
+        const ps = cp.post_state || {};
+        if (Array.isArray(ps.recalled_memories)) {
+          for (const title of ps.recalled_memories) {
+            if (title && !seenTitles.has(title)) {
+              seenTitles.add(title);
+              recalledAll.push({ step: cp.step_seq || cp.step_key, title });
+            }
+          }
+        }
+        if (ps.learned_memory && ps.learned_memory.title) {
+          learnedMem = ps.learned_memory;
+        }
+      }
+
+      if (recalledAll.length === 0 && !learnedMem) {
+        memBanner.classList.add("hidden");
+        memBanner.style.display = "none";
+        memBanner.innerHTML = "";
+      } else {
+        const storeHref = `/store?repo=${encodeURIComponent(run.repo || "")}`;
+        const parts = [];
+        parts.push(`
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+            <strong style="font-size: 13px; color: #065f46;">MongoDB Atlas Experience Memory</strong>
+            <a href="${storeHref}" target="_blank" style="font-size: 12px; font-weight: 600; color: #047857;">Inspect in Atlas Store ↗</a>
+          </div>
+        `);
+        if (recalledAll.length > 0) {
+          const chips = recalledAll
+            .map((m) => `<span class="badge badge-info" style="font-size: 11.5px;">Used (Step ${escapeHtml(String(m.step))}): ${escapeHtml(m.title)}</span>`)
+            .join(" ");
+          parts.push(`<div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center;">${chips}</div>`);
+        }
+        if (learnedMem) {
+          parts.push(`
+            <div style="background: #ffffff; border: 1px solid #6ee7b7; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; color: #064e3b;">
+              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                <span class="badge badge-mongo" style="font-size: 11px;">New Memory Saved</span>
+                <strong>${escapeHtml(learnedMem.title)}</strong>
+                <span class="mono" style="font-size: 11px; color: var(--muted);">(${escapeHtml(learnedMem.memory_id || "")})</span>
+              </div>
+              <div style="margin-top: 4px; color: var(--text-secondary);">${escapeHtml(learnedMem.resolution || "")}</div>
+            </div>
+          `);
+        }
+        memBanner.innerHTML = parts.join("");
+        memBanner.classList.remove("hidden");
+        memBanner.style.display = "flex";
+      }
+    }
+
     // 5-Step Verification Timeline
     const stepList = document.getElementById("step-list");
     if (stepList) {
@@ -671,6 +732,9 @@
             }
             if (ps.recalled_memories && ps.recalled_memories.length > 0) {
               detailRows.push(`<div class="step-kv-label">Vector Recall</div><div class="step-kv-val">${escapeHtml(ps.recalled_memories.join(" · "))}</div>`);
+            }
+            if (ps.learned_memory && ps.learned_memory.title) {
+              detailRows.push(`<div class="step-kv-label">Memory Saved</div><div class="step-kv-val" style="color: #047857; font-weight: 600;">${escapeHtml(ps.learned_memory.title)} (${escapeHtml(ps.learned_memory.memory_id || "")})</div>`);
             }
           }
           if (cp.probe_result) {
@@ -695,6 +759,21 @@
           }
         }
 
+        let memoryCallout = "";
+        if (cp && cp.post_state) {
+          const ps = cp.post_state;
+          const chips = [];
+          if (Array.isArray(ps.recalled_memories) && ps.recalled_memories.length > 0) {
+            chips.push(`<span class="badge badge-info" style="font-size: 11px;">Used Atlas Memory: ${escapeHtml(ps.recalled_memories.join(" · "))}</span>`);
+          }
+          if (ps.learned_memory && ps.learned_memory.title) {
+            chips.push(`<span class="badge badge-mongo" style="font-size: 11px;">Saved Learned Memory: ${escapeHtml(ps.learned_memory.title)}</span>`);
+          }
+          if (chips.length > 0) {
+            memoryCallout = `<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;">${chips.join("")}</div>`;
+          }
+        }
+
         return `
           <div class="step-row">
             <div class="step-top">
@@ -705,6 +784,7 @@
               <span class="badge ${badgeClass(stepStatus)}">${escapeHtml(formatStatus(stepStatus))}</span>
             </div>
             <div class="step-detail">${cp ? summarizeStep(cp) : (isCurrent ? 'Executing…' : 'Pending')}</div>
+            ${memoryCallout}
             ${detailContent}
           </div>
         `;

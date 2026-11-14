@@ -83,11 +83,22 @@ class JobRun(BaseModel):
     halt_requested: bool = False
     approval_granted: bool = False
     approval_note: str = ""
+    step_mode: str = "auto"  # "auto" | "step_by_step"
+    step_paused: bool = False
+    step_gate_approved: bool = False
+    paused_after_step: int = 0
     voice_audio_path: str = ""
     voice_briefing_text: str = ""
     summary: str = ""
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+PACING_PRESETS: dict[str, float] = {
+    "fast": 0.1,
+    "demo": 0.5,
+    "slow": 2.5,
+}
 
 
 class ExperienceMemory(BaseModel):

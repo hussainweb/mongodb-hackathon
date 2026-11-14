@@ -292,9 +292,9 @@
   const VERIFICATION_STEPS = [
     { key: "step_1_plan", seq: 1, title: "Diagnose & Plan (Atlas Vector Search + Pydantic AI)" },
     { key: "step_2_github_patch", seq: 2, title: "Ensure Branch & Commit Patch (GitHub API / Sandbox)" },
-    { key: "step_3_deploy_probe", seq: 3, title: "Deploy & Verify Microservice (Target API / Drift adaptation)" },
+    { key: "step_3_deploy_and_verify", seq: 3, title: "Deploy & Verify Microservice (Target API / Drift adaptation)" },
     { key: "step_4_github_pr", seq: 4, title: "Open PR & Post Evidence (GitHub Pull Request + Atlas proof)" },
-    { key: "step_5_close_issue", seq: 5, title: "Merge PR & Close Issue (Release verified)" },
+    { key: "step_5_finalize", seq: 5, title: "Finalize Verified Run & Persist Learned Experience" },
   ];
 
   function escapeHtml(text) {
@@ -779,7 +779,7 @@
     const stepList = document.getElementById("step-list");
     if (stepList) {
       const stepHtml = VERIFICATION_STEPS.map((vStep) => {
-        const cp = checkpoints.find((c) => c.step_key === vStep.key);
+        const cp = checkpoints.find((c) => c.step_key === vStep.key || c.step_seq === vStep.seq);
         const isCurrent = run.current_step === vStep.seq;
         const stepStatus = cp ? cp.status : (isCurrent ? run.status : "pending");
         const hasCheckpoint = cp && cp.status === "verified_took_effect";
@@ -809,7 +809,8 @@
             detailRows.push(`<div class="step-kv-label">Adaptation</div><div class="step-kv-val" style="color: var(--ok); font-weight: 500;">${escapeHtml(cp.adaptation_used)}</div>`);
           }
           if (cp.compensating_action) {
-            detailRows.push(`<div class="step-kv-label">Compensating</div><div class="step-kv-val" style="color: var(--danger);">${escapeHtml(cp.compensating_action)}</div>`);
+            const compText = typeof cp.compensating_action === "string" ? cp.compensating_action : JSON.stringify(cp.compensating_action);
+            detailRows.push(`<div class="step-kv-label">Compensating</div><div class="step-kv-val" style="color: var(--danger);">${escapeHtml(compText)}</div>`);
           }
           if (cp.external_ref) {
             detailRows.push(`<div class="step-kv-label">External Ref</div><div class="step-kv-val"><a href="${escapeHtml(cp.external_ref)}" target="_blank">${escapeHtml(cp.external_ref)}</a></div>`);

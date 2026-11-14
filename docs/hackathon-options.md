@@ -4,14 +4,11 @@ A decision brief comparing candidate project directions for our 2-person, 1-day 
 
 ## Hackathon Constraints & Judging Criteria
 
-- **Event & Schedule (Nov 14, The Quay, Toronto):** 9:00 AM Doors & team formation · **10:45 AM** Hacking begins · **5:00 PM** Submissions due · **5:15–6:45 PM** Round 1 judging · **7:00 PM** Final round (Top 6 teams) · **8:15 PM** Winners announced. *(See [hackathon-resource-guide.md](hackathon-resource-guide.md) for all official links and credit redemption steps.)*
-- **Mandatory Infrastructure:** MongoDB Atlas Sandbox (`Cluster0`, Dedicated M10, MongoDB 9.0.7 — supports Search, Vector Search, Automated Embeddings, Change Streams, JSON Schema validation). Original work only, public GitHub repo, accessible demo link, up to 4 team members, 1-minute submission video (showing code & functionality, verify video + audio playback) + concise project description on Cerebral Valley (ensure all team members are added) + 3-minute live in-person demo.
+- **Mandatory Infrastructure:** MongoDB Atlas Sandbox (`Cluster0`, Dedicated M10, MongoDB 9.0.7 — supports Search, Vector Search, Change Streams, JSON Schema validation). Public GitHub repo, New Work Only, 1-minute submission video + 3-minute live demo.
 - **Strictly Prohibited (Instant DQ):** Streamlit apps, basic RAG apps, dashboard-as-main-feature, AI job application screeners, image analyzers, mental health/medical/nutrition/education/personality/sports analyzers.
 - **Round 1 Judging:** **35%** Technical Demo · **30%** Implementation Difficulty · **20%** Impact · **15%** Creativity *(Round 2 top 6: 25% each)*.
-- **Prizes & Partner Credits:**
-  - *Prizes:* 1st ($7k MongoDB + $3k LangSmith + 3 mo ElevenLabs Pro), 2nd ($5k MongoDB + $2k LangSmith), 3rd ($3k MongoDB + $1k LangSmith), plus **Best Project Built with ElevenLabs** (3 mo Scale Tier).
-  - *Hacker Credits:* **Voyage AI** 200M free tokens (add payment method for Tier 1 rate limits), **ElevenLabs** 1 mo Creator / 131k credits (Discord `#coupon-codes`), **LangSmith** $50 credits + Deployments (Airtable form).
-- **Planned Core Stack:** Python 3.14, FastAPI + minimal HTMX/SSE live operator theater (no heavy SPA/CSS time sink), MongoDB Atlas, Pydantic AI + Logfire, LangSmith tracing/evals, Voyage AI embeddings/reranking (or Atlas Automated Embeddings), and a targeted ElevenLabs voice hook.
+- **Prizes & Side Tracks:** Overall 1st/2nd/3rd (MongoDB + LangSmith + ElevenLabs) + **Best Project Built with ElevenLabs** side track.
+- **Planned Core Stack:** Python 3.14, FastAPI + minimal HTMX/SSE live operator theater (no heavy SPA/CSS time sink), MongoDB Atlas, Pydantic AI + Logfire, LangSmith tracing/evals, and a targeted ElevenLabs voice hook.
 
 ---
 
@@ -31,9 +28,33 @@ These four options avoid inventing contrived synthetic enterprise datasets and a
 
 - **Primary Track:** Track 1 (*Agents You Can Audit*) · *Crosses into Track 3 (post-effect verification)*
 - **Problem Statement:** AI agents fail in production not because they can't reason, but because they have no pre-execution `sudo` gate and no `Ctrl+Z` rollback when a multi-step run goes wrong mid-flight.
+- **What the Solution Looks Like:**
+  - **What we actually build & run:** (1) A **FastAPI + HTMX/SSE web app** acting as the operator console & policy proxy, (2) a **Pydantic AI agent** whose tools all go through our Atlas-backed proxy instead of calling APIs directly, (3) **2–3 real local/live targets** (a real test GitHub repo, a local FastAPI feature-flag/config service, and a local workspace/Docker container), and (4) **MongoDB Atlas** (`Cluster0`) storing every intent, snapshot, and Change Stream trigger.
+  - **What it looks like in the browser:**
+    ```text
+    +-------------------------------------------------------------------------+
+    | Task: "Prepare staging hotfix release"   Principal: hussain (staging)   |
+    | [ Run Agent ]   [ STOP & REWIND TO STEP 0 ]   [ Mic: Voice Sudo ]       |
+    +------------------------------------+------------------------------------+
+    | LIVE EXECUTION & POLICY GATE (SSE) | REAL TARGET STATE (LIVE PROBE)     |
+    |                                    |                                    |
+    | 1. github.create_branch            | GitHub Test Repo:                  |
+    |    Gate: ALLOW -> APPLIED          |   branch: hotfix/retry-limit (NEW) |
+    |    Undo saved: delete_branch       |                                    |
+    |                                    | Local Config Service:              |
+    | 2. config.patch(max_retries=5)     |   version: v14 -> v15              |
+    |    Gate: VOICE SUDO REQUIRED       |   max_retries: 2 -> 5              |
+    |    -> Spoken: "Approve staging"    |                                    |
+    |    -> APPLIED                      | Prod Cache:                        |
+    |                                    |   UNTOUCHED (blocked pre-action)   |
+    | 3. cache.purge(env="prod")         |                                    |
+    |    Gate: DENY (wrong scope)        | Logfire / LangSmith Trace: [link]  |
+    +------------------------------------+------------------------------------+
+    ```
+  - **End-to-end flow:** You type a goal and hit **Run Agent**. Instead of blindly mutating systems, the agent proposes one tool call at a time into MongoDB `action_intents`. The proxy checks `delegations` + `policies`, snapshots `pre_state`, and registers the inverse `compensating_action`. Low-risk steps run automatically; medium/high-risk steps play an ElevenLabs voice prompt asking for your spoken `"sudo"` approval; out-of-scope steps are rejected *before* execution. Clicking **Stop & Rewind** flips a flag in MongoDB, triggers an Atlas Change Stream interrupt, executes every saved inverse action in reverse order, and shows the GitHub branch disappearing and the config service reverting to `v14`.
 - **Concrete Use Case & What You See:**
   - *Scenario:* An engineer asks the agent to *"prepare a staging hotfix release"* across 3 real targets: (1) create a GitHub branch & release note commit in a test repo, (2) raise a rate-limit setting in a local FastAPI config service, and (3) attempt to purge a `prod` cache / force-push `main`.
-  - *On Screen (HTMX + SSE):* Left column shows the live step-by-step **Plan & Authority Chain** (`human:hussain -> role:staging_ops -> agent:release_bot`); right column shows live **Target State** (the actual GitHub branch, config version `v14 -> v15`, and container state). Step 2 pauses at a yellow `AWAITING VOICE SUDO` gate (ElevenLabs speaks the risk summary and accepts your spoken `"approve staging only"`); Step 3 hits a red `BLOCKED PRE-ACTION` policy gate before touching `prod`. Clicking **"Rewind to Step 0"** executes the inverse actions and snaps the real GitHub branch and service config back to `v14`.
+  - *Result:* You prove pre-action blocking, who authorized each step, why it ran, and real external state reverting on demand.
 - **MongoDB Data Stored:**
   - `delegations`: Human principal, role, allowed resource scopes, max auto-approved risk tier, expiry.
   - `policies`: Declarative allow / `require_voice_sudo` / deny rules enforced with MongoDB JSON Schema validation.
@@ -51,9 +72,31 @@ These four options avoid inventing contrived synthetic enterprise datasets and a
 
 - **Primary Track:** Track 3 (*Finish the Job*) · *Crosses into Track 1 (gates/rollback) & Track 2 (fix memory)*
 - **Problem Statement:** Multi-step API workflows silently break in the real world: webhooks return `202 Accepted` without actually processing, workers crash mid-run causing duplicate side effects, and downstream APIs rename fields overnight.
+- **What the Solution Looks Like:**
+  - **What we actually build & run:** (1) A **FastAPI + HTMX/SSE control room**, (2) a **separate Pydantic AI worker process** (so we can literally `SIGKILL` its OS PID live on stage!) checkpointing every step in MongoDB Atlas, (3) **3 tiny local FastAPI mock external services** (Auth, Webhook Dispatcher, Quota/Billing) that serve real OpenAPI specs and can be toggled from `v1` to breaking `v2` at runtime, and (4) **Atlas Vector Search** over past API drift fixes.
+  - **What it looks like in the browser:**
+    ```text
+    +-------------------------------------------------------------------------+
+    | Job: "Onboard Workspace Acme-42"   Worker PID: 48192 (ALIVE)            |
+    | CHAOS: [ Drop Webhook 202 ]  [ SIGKILL Worker ]  [ Swap API v1 -> v2 ]  |
+    +------------------------------------+------------------------------------+
+    | VERIFIED STEP PIPELINE (SSE)       | DOWNSTREAM SERVICES & PROBES       |
+    |                                    |                                    |
+    | 1. auth.create_tenant              | Auth API (v1):                     |
+    |    SENT -> VERIFIED TOOK EFFECT    |   tenant acme-42 exists (1x only)  |
+    |                                    |                                    |
+    | 2. webhook.register                | Webhook API (v2 - DRIFTED!):       |
+    |    SENT (202) -> PROBE FAILED!     |   renamed url -> callback_uri      |
+    |    -> Retried -> VERIFIED          |   Probe: test ping 200 OK          |
+    |                                    |                                    |
+    | 3. billing.set_quota               | Vector Search Recall:              |
+    |    RESUMED AFTER SIGKILL -> DONE   |   Matched past OpenAPI v2 diff     |
+    +------------------------------------+------------------------------------+
+    ```
+  - **End-to-end flow:** You launch a workspace cutover. While it runs, you click **Drop Webhook 202**—the target returns `202 Accepted`, but the agent's independent probe sees no webhook registered and retries. Next you click **SIGKILL Worker**—the worker PID actually dies on screen, you click **Restart Worker**, and it resumes at Step 3 from MongoDB without creating a duplicate tenant. Finally you click **Swap API v1 → v2**—the next call fails with `422 Unprocessable Entity`, Pydantic AI pulls the target's live `/openapi.json` + queries Atlas Vector Search for past field-rename fixes, remaps `webhook_url → callback_uri`, and finishes the job (or asks via ElevenLabs voice if an unknown required field has no safe default).
 - **Concrete Use Case & What You See:**
   - *Scenario:* We run a 4-step *"New Customer Workspace Cutover"* across 3 real local FastAPI microservices (Auth Service, Webhook Dispatcher, Billing/Quota Service): create tenant -> register webhook -> enable quota -> verify live webhook delivery.
-  - *On Screen (HTMX + SSE):* Top bar has 3 big red **Chaos Buttons**: `1. Drop Async Webhook`, `2. SIGKILL Worker`, `3. Deploy Breaking API v2`. As the agent runs, each step moves from `pending -> sent -> verified_took_effect`. When you click `Drop Async Webhook`, the agent's independent probe catches that the webhook returned `202` but never registered (`only-sent`), and retries idempotently. When you `SIGKILL` the Python worker and restart it, it picks up cleanly at Step 3 without recreating the tenant. When you deploy `API v2` (renaming `webhook_url` -> `callback_uri` and `secret` -> `hmac_key`), the agent searches past OpenAPI drift fixes in Atlas Vector Search, adapts its payload, and finishes—or escalates via ElevenLabs voice if a new required field has no safe default.
+  - *Result:* Judges literally watch the OS process die, watch a lying `202` get caught, and watch an API schema change mid-flight—yet the workflow finishes cleanly with zero duplicate side effects.
 - **MongoDB Data Stored:**
   - `workflow_runs` & `step_checkpoints`: Idempotency keys, `status` (`pending | sent | verified_took_effect | failed`), retry counts, external resource IDs, and probe results.
   - `api_drift_playbooks` (**Atlas Vector Search**): Past OpenAPI diffs, field-mapping rules, error signatures, and confidence scores (invalidatable if a fix turns out wrong).
@@ -69,9 +112,33 @@ These four options avoid inventing contrived synthetic enterprise datasets and a
 
 - **Primary Track:** Track 2 (*Memory You Can Govern*) · *Crosses into Track 1 (authority-scoped writes)*
 - **Problem Statement:** AI agents with long-term memory silently leak policies across teams/clients and keep obeying stale or wrong facts even after humans correct them—and most demos can't prove memory actually changed a decision.
+- **What the Solution Looks Like:**
+  - **What we actually build & run:** (1) A **FastAPI + HTMX/SSE Split-Screen Policy Triage Workbench**, (2) a **Pydantic AI triage agent** backed by a single **Atlas Vector Search** collection with strict tenant ACL filters and memory lifecycle states, (3) a **seed corpus** of real GitHub repo triage policies/issues (or Toronto Open Data rules), and (4) an automated **LangSmith counterfactual eval runner** that proves `0%` cross-tenant leaks and `100%` behavior change after a memory edit.
+  - **What it looks like in the browser:**
+    ```text
+    +-------------------------------------------------------------------------+
+    | Incoming Ticket: "OAuth callback fails with 500 on token refresh"       |
+    | [ Run Side-by-Side Triage ]   [ Mic: Voice Memory Governance ]          |
+    +------------------------------------+------------------------------------+
+    | TENANT A (Org: FastAPI)            | TENANT B (Org: Next.js)            |
+    | ACL Filter: tenant="org_a"         | ACL Filter: tenant="org_b"         |
+    |                                    |                                    |
+    | Retrieved Memory:                  | Retrieved Memory (BEFORE EDIT):    |
+    |  - [ACTIVE] Auth bugs -> @sec-team |  - [STALE] Auth -> @legacy-team    |
+    | Decision: Escalate to @sec-team    | Decision: Assign @legacy-team (BAD)|
+    |                                    |                                    |
+    |                                    | -> Spoken: "Expire legacy-team for |
+    |                                    |    Org B; use @security-triage"    |
+    |                                    | Decision (AFTER EDIT):             |
+    | Decision: UNCHANGED (@sec-team)    |  -> FLIPPED to @security-triage!   |
+    +------------------------------------+------------------------------------+
+    | LangSmith Counterfactual Proof: Leak Rate = 0% | Decision Flip = 100%   |
+    +-------------------------------------------------------------------------+
+    ```
+  - **End-to-end flow:** You submit one real bug/support ticket and run it simultaneously through Tenant A and Tenant B. Both hit the same Atlas Vector Search collection, but strict tenant ACL filters prevent Tenant A's rules from ever appearing in Tenant B's retrieval. Tenant B routes the ticket wrong because of an outdated remembered rule. You speak a correction into ElevenLabs; the app marks the old MongoDB memory document `status: "invalidated"` and writes the new rule with authority metadata, then automatically replays the exact same ticket—showing Tenant B's routing flip immediately while Tenant A stays untouched.
 - **Concrete Use Case & What You See:**
-  - *Scenario:* An operations triage agent routes incoming support/issue tickets for two isolated orgs sharing one platform (e.g., **Org A: `vercel/next.js` vs Org B: `fastapi/fastapi`**, or **Ward A vs Ward B municipal rules**). Both orgs have overlapping terms ("security report", "breaking regression", "escalate to maintainer"), but opposite routing rules.
-  - *On Screen (HTMX + SSE):* A **Split-Screen Counterfactual Runner**. You feed the *exact same ticket* into Tenant A and Tenant B: Tenant B misroutes it because of an outdated remembered rule (`"Route all auth tickets to legacy-team"`). You click or speak into ElevenLabs: *"Expire the legacy-team rule for Tenant B; route auth tickets to security-triage."* Immediately, the UI re-runs the same ticket: Tenant B's decision flips cleanly, Tenant A is untouched, and a **LangSmith Eval Badge** shows `Cross-Tenant Leak: 0% | Post-Correction Flip: 100%`.
+  - *Scenario:* An operations triage agent routes incoming support/issue tickets for two isolated orgs sharing one platform (e.g., **Org A: `fastapi/fastapi` vs Org B: `vercel/next.js`**, or **Ward A vs Ward B municipal rules**). Both orgs have overlapping terms ("security report", "breaking regression", "escalate to maintainer"), but opposite routing rules.
+  - *Result:* You visually prove scoped isolation, instant forgetting/correction, and causal impact on agent behavior—not just RAG retrieval.
 - **MongoDB Data Stored:**
   - `tenant_memories` (**Atlas Vector Search**): Memory text + embedding, strict `tenant_id` / `role_acl` filter fields, `source_authority`, `created_at`, `expires_at` (TTL), and `superseded_by` / `status` (`active | invalidated | expired`).
   - `memory_audit_log`: Who wrote, read, corrected, or expired each memory and which `run_id` consumed it.
@@ -89,9 +156,28 @@ These four options avoid inventing contrived synthetic enterprise datasets and a
 
 - **Primary Track:** Track 3 (*Finish the Job*) · *Crosses into Track 1 (dispatch caps) & ElevenLabs*
 - **Problem Statement:** During live weather or transit disruptions, alert and rerouting workflows often fire notifications blindly without verifying delivery or respecting safety/budget caps when conditions shift mid-response.
+- **What the Solution Looks Like:**
+  - **What we actually build & run:** (1) A **FastAPI + HTMX/SSE Dispatch Console**, (2) a **live feed poller** pulling real Environment Canada / Toronto TTC JSON alerts, (3) a **Pydantic AI dispatch coordinator** checkpointed in MongoDB Atlas, and (4) **3 local simulated notification/dispatch receivers** (Ops Console, Rider SMS Gateway, Carrier Reroute API) where one receiver can fail silently.
+  - **What it looks like in the browser:**
+    ```text
+    +-------------------------------------------------------------------------+
+    | LIVE ALERT (Environment Canada / TTC): "Line 1 Signal Issue - Bloor"    |
+    | [ Trigger Live Dispatch ]   [ Simulate Channel Drop ]   [ Voice Reply ] |
+    +------------------------------------+------------------------------------+
+    | DISPATCH EXECUTION & VERIFICATION  | POLICY & CHANNEL RECEIVERS         |
+    |                                    |                                    |
+    | 1. Classify impact: 6 zones        | Policy Cap: max 3 zones auto       |
+    | 2. Update detour board: VERIFIED   | -> PAUSED: ElevenLabs spoke brief: |
+    | 3. Notify Ops Webhook: VERIFIED    |    "6 zones hit; approve alert?"   |
+    | 4. Notify Rider SMS:               | -> Dispatcher: "Approve all 6"     |
+    |    SENT (200) -> NO ACK!           |                                    |
+    |    -> Fallback Email/Push: ACKED!  | Final Status: ALL CHANNELS ACKED   |
+    +------------------------------------+------------------------------------+
+    ```
+  - **End-to-end flow:** The app pulls a real active alert (or replays today's real JSON feed). Pydantic AI generates the multi-channel dispatch plan. Because 6 zones exceed the 3-zone auto-broadcast policy cap, execution pauses before notifying riders and **ElevenLabs speaks a 10-second audio briefing** to the dispatcher, resuming once you approve by voice. When the SMS receiver accepts the HTTP request (`200 OK`) but fails the delivery-ack probe, the agent detects `only-sent` vs `took-effect`, automatically falls back to the secondary channel, and verifies all recipients received the update.
 - **Concrete Use Case & What You See:**
   - *Scenario:* A live Environment Canada weather alert or Toronto TTC service disruption triggers a multi-step response: (1) classify affected zones/routes, (2) update active detour status in a local dispatch board, (3) notify 3 downstream webhook channels (ops Slack mock, rider SMS mock, partner carrier API), and (4) verify every channel actually acknowledged receipt.
-  - *On Screen (HTMX + SSE):* Live feed card on the left showing the real fetched weather/transit alert; step-by-step **Dispatch Execution & Verification** on the right. Channel #2 simulates an unacknowledged drop (`only-sent`), so the agent reroutes via fallback channel; when the disruption scope crosses a broadcast threshold (e.g., >5 zones), a Track 1 policy gate triggers **ElevenLabs** to read a 10-second spoken incident brief and ask the dispatcher for verbal confirmation before broadcasting city-wide.
+  - *Result:* A vivid, non-developer real-world demo combining live public feeds, delivery verification, policy caps, and voice dispatch.
 - **MongoDB Data Stored:**
   - `disruption_events`: Raw real feed snapshots (Environment Canada / TTC JSON), normalized severity, affected corridors.
   - `dispatch_runs` & `delivery_checkpoints`: Per-channel `sent` vs `verified_acked` state, retry/fallback history, crash-resume cursor.
@@ -110,9 +196,23 @@ These three earlier variations share the same Track 3 + Track 1/2 engine and can
 
 - **Primary Track:** Track 3 (*Finish the Job*) + Track 1 (*Agents You Can Audit*)
 - **Problem Statement:** Multi-system refund and payout pipelines risk double-paying customers after mid-batch crashes, treating a gateway `200 OK` as settled money, or breaking when a payment provider changes webhook fields.
+- **What the Solution Looks Like:**
+  - **What we actually build & run:** A **FastAPI + HTMX/SSE Settlement Runner**, a **Pydantic AI batch worker**, and **3 local mock services** (Payment Gateway, Order Store, Double-Entry Ledger) wired to MongoDB Atlas.
+  - **What it looks like in the browser:**
+    ```text
+    +-------------------------------------------------------------------------+
+    | Batch: "Daily Refund Run (5 Claims)"   [ Crash Worker ]  [ Mutate API ] |
+    +-------------------------------------------------------------------------+
+    | Claim #1 ($45)   Gateway: SETTLED    Ledger: POSTED (1x)   [VERIFIED]   |
+    | Claim #2 ($120)  Gateway: SETTLED    Ledger: POSTED (1x)   [VERIFIED]   |
+    | Claim #3 ($80)   Gateway: 202 SENT   Probe: UNSETTLED -> Retrying...    |
+    | Claim #4 ($2500) Policy Gate >$500   [ElevenLabs Voice PIN Required]    |
+    | Claim #5 ($60)   Pending (waiting resume after simulated worker crash)  |
+    +-------------------------------------------------------------------------+
+    ```
+  - **End-to-end flow:** You start a 5-claim batch. Claims #1–2 settle and write balanced double-entry records. You crash the worker mid-batch and restart it—Claims #1–2 are skipped via idempotency keys (zero double refunds). Claim #4 ($2,500) exceeds the $500 policy cap, prompting an ElevenLabs voice PIN before calling the gateway (or reversing prior legs if aborted).
 - **Concrete Use Case & What You See:**
   - *Scenario:* Process a batch of 5 customer refund/chargeback claims across 3 local mock services: Payment Gateway, Order System, and Double-Entry Ledger.
-  - *On Screen (HTMX + SSE):* Live batch table showing each claim moving `initiated -> gateway_sent -> ledger_verified`. Clicking **"Crash Worker"** mid-batch stops execution at claim #3 and restarts cleanly without double-refunding claims #1–2; clicking **"Gate High-Value Refund ($2,500)"** pauses claim #4 for an ElevenLabs voice PIN/approval or reverses the prior journal entry on abort; mutating the mock gateway's webhook payload triggers Vector Search adaptation.
 - **MongoDB Data Stored:**
   - `settlement_claims` & `ledger_entries`: Idempotency keys, debit/credit legs, `gateway_tx_id`, `settlement_verified: bool`.
   - `policy_gates`: Per-operator refund limits, voice approval transcripts, compensating reversal records.
@@ -123,9 +223,24 @@ These three earlier variations share the same Track 3 + Track 1/2 engine and can
 
 - **Primary Track:** Track 3 (*Finish the Job*) + Track 1 (*Agents You Can Audit*)
 - **Problem Statement:** Automated incident responders often execute a restart or config fix, see exit code `0`, and close the alert—even though the service is still unhealthy or a half-applied fix left infrastructure worse off.
+- **What the Solution Looks Like:**
+  - **What we actually build & run:** A **FastAPI + HTMX/SSE Incident Runner**, a **Pydantic AI SRE agent**, and a **real local Dockerized web app + reverse proxy** (using our local Docker setup) that we intentionally break on stage.
+  - **What it looks like in the browser:**
+    ```text
+    +-------------------------------------------------------------------------+
+    | Target App Health: 502 BAD GATEWAY  [ Break Proxy ]  [ Voice Approve ]  |
+    +------------------------------------+------------------------------------+
+    | MITIGATION EXECUTION               | LIVE PROBE & ROLLBACK STATE        |
+    | 1. Diagnose nginx/proxy upstream   | Probe GET /health -> 502           |
+    | 2. Proposed fix: patch upstream    | Snapshot saved: proxy_conf_v3      |
+    |    -> Gate: VOICE SUDO REQUIRED    |                                    |
+    | 3. Apply fix + reload container    | Probe GET /health -> 200 OK!       |
+    |    (If still 502 -> auto-rollback) | Status: VERIFIED RECOVERED         |
+    +------------------------------------+------------------------------------+
+    ```
+  - **End-to-end flow:** You click **Break Proxy** so the real local container starts returning `502`. The agent inspects logs/config, queries Vector Search for past fixes, asks for spoken ElevenLabs confirmation before modifying config, applies the fix, and only marks the incident resolved after an independent HTTP `/health` probe returns `200 OK` consistently—auto-rolling back if the probe fails.
 - **Concrete Use Case & What You See:**
   - *Scenario:* A local Dockerized web app + reverse proxy starts returning `502 Bad Gateway` (simulated bad route or crashed worker container). The agent diagnoses it, proposes a mitigation plan, restarts/patches the target, and runs an **independent HTTP health + latency probe** before marking it fixed.
-  - *On Screen (HTMX + SSE):* Live target health indicator (`502 -> 200 OK`), mitigation step ledger, and chaos toggles (*"Break Proxy Config"*, *"Block Dangerous `rm`/Volume Action"*). High-risk actions pause for spoken **ElevenLabs** on-call approval (`"Approve container restart"`), and if the health probe still fails after mitigation, it rolls back the config change automatically.
 - **MongoDB Data Stored:**
   - `incidents` & `mitigation_steps`: Observed health-probe metrics before/after, commands attempted, `exit_zero_only` vs `health_verified` status, rollback snapshots.
   - `runbook_memories` (**Atlas Vector Search**): Past incident signatures and fixes, scoped by environment (`staging` vs `prod`) with expiry/correction when a fix stops working.
@@ -136,9 +251,23 @@ These three earlier variations share the same Track 3 + Track 1/2 engine and can
 
 - **Primary Track:** Track 3 (*Finish the Job*) + Track 1 (*Agents You Can Audit*)
 - **Problem Statement:** Onboarding a B2B partner across disconnected portals (SSO, Billing, Webhooks, Storage) constantly stalls on async propagation delays, half-created orphaned accounts when a step fails, or sudden vendor form/API changes.
+- **What the Solution Looks Like:**
+  - **What we actually build & run:** A **FastAPI + HTMX/SSE Onboarding Console**, a **Pydantic AI provisioning agent**, and **4 lightweight local FastAPI vendor mocks** (SSO, Billing, Webhooks, Storage) wired to MongoDB Atlas.
+  - **What it looks like in the browser:**
+    ```text
+    +-------------------------------------------------------------------------+
+    | Partner: "Northstar Logistics"   [ Start Onboarding ]  [ Abort & Undo ] |
+    +-------------------------------------------------------------------------+
+    | 1. SSO Portal:      202 Accepted -> Polling until user active -> DONE   |
+    | 2. Storage Bucket:  Created s3://northstar-drop (undo ID saved) -> DONE |
+    | 3. Billing Portal:  422 Missing new field "tax_region"                  |
+    |    -> ElevenLabs asks ops lead by voice -> Captured "ON-CA" -> DONE    |
+    | 4. Webhook Setup:   Verified test ping 200 OK -> ONBOARDING COMPLETE    |
+    +-------------------------------------------------------------------------+
+    ```
+  - **End-to-end flow:** You launch onboarding for `"Northstar Logistics"`. Step 1 catches SSO's async delay (`202` before the user is queryable). Step 2 saves the created bucket ID for rollback. Step 3 hits a newly added vendor field (`tax_region`); ElevenLabs asks you by voice, records `"ON-CA"`, and completes Billing. If you click **Abort & Undo** mid-run, it deletes the created bucket and SSO tenant so zero orphaned resources remain.
 - **Concrete Use Case & What You See:**
   - *Scenario:* Onboard a new partner (`"Northstar Logistics"`) across 4 mock vendor APIs: Identity/SSO, Billing Plan, Webhook Subscription, and S3 Bucket Policy.
-  - *On Screen (HTMX + SSE):* A 4-step provisioning checklist with live status probes (catching when SSO returns `202` before the user actually exists). If Step 3 fails compliance or you hit **"Abort Onboarding,"** the agent runs compensating `DELETE` calls to tear down Steps 1–2 cleanly. If the Billing mock adds a brand-new required field (`tax_region`), **ElevenLabs** asks the ops lead by voice for the value, captures the answer, and finishes provisioning.
 - **MongoDB Data Stored:**
   - `onboarding_jobs` & `vendor_steps`: Partner profile, per-vendor created resource IDs (needed for teardown!), propagation probe states, compensating delete payloads.
   - `vendor_field_mappings` (Vector Search): Learned schema mappings across vendor API versions.

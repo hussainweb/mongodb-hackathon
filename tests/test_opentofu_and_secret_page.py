@@ -531,3 +531,9 @@ async def test_workspace_renders_memory_activity_banner_and_callouts() -> None:
             assert "Used Atlas Memory:" in r_home.text
             assert "Saved Learned Memory:" in r_home.text
             assert "New Memory Saved" in r_home.text
+            assert 'id="btn-new-run"' in r_home.text
+            assert "— New Run (Standby) —" in r_home.text
+
+            r_new = await ac.get("/?new=1")
+            assert r_new.status_code == 200
+            assert 'let currentRunId = "";' in r_new.text

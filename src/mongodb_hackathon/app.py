@@ -449,7 +449,13 @@ async def index(request: Request) -> HTMLResponse:
     if not issues:
         issues = FALLBACK_DEMO_ISSUES
 
-    initial_run_id = await _resolve_active_run_id(store)
+    is_new_run = request.query_params.get("new", "").strip() in {"1", "true", "yes"}
+    requested_run_id = request.query_params.get("run_id", "").strip()
+    initial_run_id = (
+        ""
+        if is_new_run
+        else await _resolve_active_run_id(store, requested_run_id)
+    )
     initial_snapshot = (
         await _build_run_snapshot(store, http, initial_run_id)
         if initial_run_id
@@ -482,7 +488,13 @@ async def infra_page(request: Request) -> HTMLResponse:
     store, github, http, settings = _deps(request)
     target = await _fetch_target_state(http)
     openapi_info = await _fetch_target_openapi(http)
-    initial_run_id = await _resolve_active_run_id(store)
+    is_new_run = request.query_params.get("new", "").strip() in {"1", "true", "yes"}
+    requested_run_id = request.query_params.get("run_id", "").strip()
+    initial_run_id = (
+        ""
+        if is_new_run
+        else await _resolve_active_run_id(store, requested_run_id)
+    )
     initial_snapshot = (
         await _build_run_snapshot(store, http, initial_run_id)
         if initial_run_id

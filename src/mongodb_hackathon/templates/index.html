@@ -126,17 +126,16 @@
         <h2>Execution &amp; Verification Pipeline</h2>
         <div class="section-head-desc">Autonomous 5-step release verification workflow backed by MongoDB Atlas checkpoints.</div>
       </div>
-      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
         <select id="run-selector" aria-label="Active Run" style="max-width: 280px;" onchange="switchRun(this.value)">
-          {% if not runs %}
-            <option value="">No runs yet</option>
-          {% endif %}
+          <option value="" {% if not initial_run_id %}selected{% endif %}>— New Run (Standby) —</option>
           {% for r in runs %}
             <option value="{{ r.run_id }}" {% if r.run_id == initial_run_id %}selected{% endif %}>
               {{ r.run_id }} · #{{ r.issue_number }} ({{ r.status }})
             </option>
           {% endfor %}
         </select>
+        <button type="button" id="btn-new-run" class="btn btn-sm btn-ghost" onclick="resetToNewRun()" title="Clear timeline and prepare a fresh run">+ New Run</button>
         <span id="run-status-badge" class="badge badge-neutral">No Run Selected</span>
       </div>
     </div>
@@ -866,8 +865,65 @@
     });
   }
 
+  function resetToNewRun() {
+    connectStream("");
+    currentRunId = "";
+    lastRenderedPlanId = "";
+    const sel = document.getElementById("run-selector");
+    if (sel) sel.value = "";
+
+    const badge = document.getElementById("run-status-badge");
+    if (badge) {
+      badge.textContent = "No Run Selected";
+      badge.className = "badge badge-neutral";
+    }
+    const kpiPid = document.getElementById("kpi-pid");
+    if (kpiPid) kpiPid.textContent = "—";
+    const modeBadge = document.getElementById("run-mode-badge");
+    if (modeBadge) {
+      modeBadge.textContent = "auto";
+      modeBadge.className = "badge badge-neutral";
+    }
+    const prLink = document.getElementById("run-pr-link");
+    if (prLink) prLink.innerHTML = "";
+
+    for (const id of ["btn-kill", "btn-resume", "btn-rollback", "btn-step-next"]) {
+      const el = document.getElementById(id);
+      if (el) el.classList.add("hidden");
+    }
+    const planEditor = document.getElementById("plan-editor");
+    if (planEditor) planEditor.classList.remove("visible");
+    const approvalBanner = document.getElementById("approval-banner");
+    if (approvalBanner) approvalBanner.classList.remove("visible");
+    const memBanner = document.getElementById("memory-activity-banner");
+    if (memBanner) {
+      memBanner.classList.add("hidden");
+      memBanner.style.display = "none";
+      memBanner.innerHTML = "";
+    }
+    const stepList = document.getElementById("step-list");
+    if (stepList) {
+      stepList.innerHTML = '<div class="empty-state">Select or compose a release prompt above and click <strong>Run Release Closer</strong>.</div>';
+    }
+    if (window.history && window.history.replaceState) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("new", "1");
+      url.searchParams.delete("run_id");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }
+
   async function switchRun(runId) {
-    if (!runId) return;
+    if (!runId) {
+      resetToNewRun();
+      return;
+    }
+    if (window.history && window.history.replaceState) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("new");
+      url.searchParams.set("run_id", runId);
+      window.history.replaceState({}, "", url.toString());
+    }
     connectStream(runId);
     const resp = await fetch(`/api/runs/${runId}`);
     if (resp.ok) renderSnapshot(await resp.json());
@@ -905,14 +961,21 @@
     }
 
     const data = await resp.json();
-    const sel = document.getElementById("run-selector");
-    if (sel.options.length === 1 && sel.options[0].value === "") {
-      sel.innerHTML = "";
+    if (window.history && window.history.replaceState) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("new");
+      url.searchParams.set("run_id", data.run_id);
+      window.history.replaceState({}, "", url.toString());
     }
+    const sel = document.getElementById("run-selector");
     const runOpt = document.createElement("option");
     runOpt.value = data.run_id;
     runOpt.textContent = `${data.run_id} · #${currentIssueNumber} (running)`;
-    sel.prepend(runOpt);
+    if (sel.options.length > 0 && sel.options[0].value === "") {
+      sel.insertBefore(runOpt, sel.options[1] || null);
+    } else {
+      sel.prepend(runOpt);
+    }
     sel.value = data.run_id;
 
     connectStream(data.run_id);

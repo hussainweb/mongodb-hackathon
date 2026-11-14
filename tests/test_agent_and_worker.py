@@ -362,3 +362,48 @@ async def test_approval_gate_and_freeform_issue_zero(
     finally:
         await _cleanup_run(atlas_store, run_id)
         target_state.reset()
+
+
+@pytest.mark.asyncio
+async def test_infra_context_cache_hit_skips_github_discovery() -> None:
+    """_get_infra_context_cached caches discovered files in store and reuses them on subsequent calls."""
+    from mongodb_hackathon.worker import _get_infra_context_cached
+
+    class _FakeStore:
+        def __init__(self) -> None:
+            self.cache: dict[str, tuple[list[str], dict[str, str]]] = {}
+
+        async def get_cached_infra_context(
+            self, repo: str, ref: str = "", ttl_seconds: int = 300
+        ) -> tuple[list[str], dict[str, str]] | None:
+            return self.cache.get(f"{repo}:{ref}")
+
+        async def set_cached_infra_context(
+            self, repo: str, files: list[str], contents: dict[str, str], ref: str = ""
+        ) -> None:
+            self.cache[f"{repo}:{ref}"] = (files, contents)
+
+    class _CountingGitHub:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def discover_infra_context(
+            self, repo: str, ref: str = ""
+        ) -> tuple[list[str], dict[str, str]]:
+            self.calls += 1
+            return ["service_config.json"], {"service_config.json": "{}"}
+
+    store = _FakeStore()
+    gh = _CountingGitHub()
+
+    files1, contents1, hit1 = await _get_infra_context_cached(store, gh, "org/repo")  # type: ignore[arg-type]
+    assert hit1 is False
+    assert gh.calls == 1
+    assert files1 == ["service_config.json"]
+    assert contents1 == {"service_config.json": "{}"}
+
+    files2, contents2, hit2 = await _get_infra_context_cached(store, gh, "org/repo")  # type: ignore[arg-type]
+    assert hit2 is True
+    assert gh.calls == 1
+    assert files2 == ["service_config.json"]
+    assert contents2 == {"service_config.json": "{}"}

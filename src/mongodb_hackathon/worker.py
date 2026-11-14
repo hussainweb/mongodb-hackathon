@@ -620,6 +620,26 @@ async def execute_job(
         )
 
 
+async def _get_infra_context_cached(
+    db_store: MongoStore,
+    gh: GitHubSandboxAdapter,
+    repo: str,
+) -> tuple[list[str], dict[str, str], bool]:
+    """Return (repo_files, file_contents, cache_hit) using MongoDB TTL cache when available."""
+    get_cached = getattr(db_store, "get_cached_infra_context", None)
+    if callable(get_cached):
+        cached = await get_cached(repo)
+        if cached is not None:
+            files, contents = cached
+            return files, contents, True
+
+    files, contents = await gh.discover_infra_context(repo)
+    set_cached = getattr(db_store, "set_cached_infra_context", None)
+    if callable(set_cached) and files:
+        await set_cached(repo, files, contents)
+    return files, contents, False
+
+
 async def _execute_job_impl(
     run_id: str,
     store: MongoStore | None = None,
@@ -685,12 +705,29 @@ async def _execute_job_impl(
                 idempotency_key=f"{run_id}:step_1_plan",
                 attempts=(cp1.attempts + 1) if cp1 else 1,
             )
-            repo_files, file_contents = await gh.discover_infra_context(run.repo)
-            memories = await db_store.search_experience(
-                f"{run.issue_title}\n{run.issue_body}",
-                kind=["repo_rule", "github_fix"],
-                limit=3,
-                source_repo=run.repo,
+            await db_store.emit_event(
+                run_id,
+                "step_1_plan",
+                "step_progress",
+                "Discovering repo layout & searching Atlas Vector Search memories…",
+            )
+            (repo_files, file_contents, cache_hit), memories = await asyncio.gather(
+                _get_infra_context_cached(db_store, gh, run.repo),
+                db_store.search_experience(
+                    f"{run.issue_title}\n{run.issue_body}",
+                    kind=["repo_rule", "github_fix"],
+                    limit=3,
+                    source_repo=run.repo,
+                ),
+            )
+            await db_store.emit_event(
+                run_id,
+                "step_1_plan",
+                "step_progress",
+                (
+                    f"Generating fix plan with LLM ({len(memories)} memories, "
+                    f"{len(file_contents)} files{' · cached' if cache_hit else ''})…"
+                ),
             )
             fix_plan = await plan_release_fix(
                 issue_number=run.issue_number,
@@ -757,6 +794,12 @@ async def _execute_job_impl(
                 title="Create GitHub branch & commit config patch",
                 idempotency_key=f"{run_id}:step_2_github_patch",
                 attempts=(cp2.attempts + 1) if cp2 else 1,
+            )
+            await db_store.emit_event(
+                run_id,
+                "step_2_github_patch",
+                "step_progress",
+                f"Creating branch {branch_name} & committing {fix_plan.patch_filename}…",
             )
             branch_info = await gh.ensure_branch(run.repo, branch_name)
             commit_info = await gh.upsert_file_on_branch(
@@ -827,6 +870,16 @@ async def _execute_job_impl(
                 fix_plan.target_kind == "opentofu"
                 or fix_plan.patch_filename.endswith((".tf", ".tfvars"))
             )
+            await db_store.emit_event(
+                run_id,
+                "step_3_deploy_and_verify",
+                "step_progress",
+                (
+                    "Applying OpenTofu plan & verifying container /health…"
+                    if is_opentofu
+                    else "Deploying to target service & verifying took-effect…"
+                ),
+            )
             if is_opentofu:
                 ok, dep_id, verify_data = await _execute_opentofu_step3(
                     db_store=db_store,
@@ -881,6 +934,12 @@ async def _execute_job_impl(
                 title="Open GitHub PR & record verification evidence",
                 idempotency_key=f"{run_id}:step_4_github_pr",
                 attempts=(cp4.attempts + 1) if cp4 else 1,
+            )
+            await db_store.emit_event(
+                run_id,
+                "step_4_github_pr",
+                "step_progress",
+                "Opening GitHub PR & applying verification labels…",
             )
             evidence_md = (
                 f"{fix_plan.pr_body}\n\n"

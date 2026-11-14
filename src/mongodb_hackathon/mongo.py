@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pymongo import ASCENDING, DESCENDING, AsyncMongoClient
 from pymongo.asynchronous.collection import AsyncCollection
 from pymongo.asynchronous.database import AsyncDatabase
-from pymongo.errors import CollectionInvalid, OperationFailure
+from pymongo.errors import CollectionInvalid, OperationFailure, PyMongoError
 from pymongo.operations import SearchIndexModel
 
 from mongodb_hackathon.config import Settings, get_settings
@@ -111,6 +112,10 @@ class MongoStore:
     @property
     def repos(self) -> AsyncCollection[dict[str, Any]]:
         return self.db["demo_repos"]
+
+    @property
+    def infra_cache(self) -> AsyncCollection[dict[str, Any]]:
+        return self.db["infra_context_cache"]
 
     async def close(self) -> None:
         if self._client is not None:
@@ -433,3 +438,51 @@ class MongoStore:
                 if doc:
                     doc.pop("_id", None)
                     yield doc
+
+    async def get_cached_infra_context(
+        self, repo: str, ref: str = "", ttl_seconds: int = 300
+    ) -> tuple[list[str], dict[str, str]] | None:
+        """Return cached (repo_files, file_contents) if fresh, else None."""
+        try:
+            doc = await self.infra_cache.find_one(
+                {"repo": repo, "ref": ref}, {"_id": 0}
+            )
+        except PyMongoError:
+            return None
+        if not doc:
+            return None
+        cached_at = doc.get("cached_at")
+        if not isinstance(cached_at, datetime):
+            return None
+        if cached_at.tzinfo is None:
+            cached_at = cached_at.replace(tzinfo=UTC)
+        if utc_now() - cached_at > timedelta(seconds=ttl_seconds):
+            return None
+        files = doc.get("files")
+        contents = doc.get("contents")
+        if not isinstance(files, list) or not isinstance(contents, dict):
+            return None
+        return [str(f) for f in files], {
+            str(k): str(v) for k, v in contents.items()
+        }
+
+    async def set_cached_infra_context(
+        self, repo: str, files: list[str], contents: dict[str, str], ref: str = ""
+    ) -> None:
+        """Persist discovered repo layout and config contents in MongoDB for cross-worker reuse."""
+        try:
+            await self.infra_cache.update_one(
+                {"repo": repo, "ref": ref},
+                {
+                    "$set": {
+                        "repo": repo,
+                        "ref": ref,
+                        "files": files,
+                        "contents": contents,
+                        "cached_at": utc_now(),
+                    }
+                },
+                upsert=True,
+            )
+        except PyMongoError:
+            return

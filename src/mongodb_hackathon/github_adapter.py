@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import subprocess
 from pathlib import Path
@@ -362,38 +363,67 @@ class GitHubSandboxAdapter:
                 paths.append(path)
             return sorted(paths)
 
-    async def read_repo_file(self, repo: str, path: str, ref: str = "") -> str:
+    async def read_repo_file(
+        self,
+        repo: str,
+        path: str,
+        ref: str = "",
+        client: httpx.AsyncClient | None = None,
+    ) -> str:
         """Read a text file from dry-run fixture or live GitHub repository."""
         if self._is_dry_run(repo):
             return self._dry_run_file_map(repo).get(path, "")
 
-        async with httpx.AsyncClient(
-            base_url=GITHUB_API, headers=self._headers(), timeout=12.0
-        ) as client:
-            params = {"ref": ref} if ref else None
+        params = {"ref": ref} if ref else None
+        if client is not None:
             resp = await client.get(f"/repos/{repo}/contents/{path}", params=params)
-            if resp.status_code != 200:
-                return ""
-            encoded = str(resp.json().get("content", "")).replace("\n", "")
-            if not encoded:
-                return ""
-            return base64.b64decode(encoded).decode(errors="replace")
+        else:
+            async with httpx.AsyncClient(
+                base_url=GITHUB_API, headers=self._headers(), timeout=12.0
+            ) as own_client:
+                resp = await own_client.get(
+                    f"/repos/{repo}/contents/{path}", params=params
+                )
+        if resp.status_code != 200:
+            return ""
+        encoded = str(resp.json().get("content", "")).replace("\n", "")
+        if not encoded:
+            return ""
+        return base64.b64decode(encoded).decode(errors="replace")
 
     async def discover_infra_context(
         self, repo: str, ref: str = ""
     ) -> tuple[list[str], dict[str, str]]:
-        """Discover repository layout and read relevant OpenTofu or service config files."""
+        """Discover repository layout and read relevant OpenTofu or service config files concurrently."""
         files = await self.list_repo_files(repo, ref=ref)
         interesting = [
             p
             for p in files
             if p.endswith((".tf", ".tfvars", "service_config.json"))
         ][:8]
-        contents: dict[str, str] = {}
-        for path in interesting:
-            text = await self.read_repo_file(repo, path, ref=ref)
-            if text:
-                contents[path] = text[:4000]
+        if not interesting:
+            return files, {}
+
+        if self._is_dry_run(repo):
+            texts = await asyncio.gather(
+                *(self.read_repo_file(repo, path, ref=ref) for path in interesting)
+            )
+        else:
+            async with httpx.AsyncClient(
+                base_url=GITHUB_API, headers=self._headers(), timeout=12.0
+            ) as client:
+                texts = await asyncio.gather(
+                    *(
+                        self.read_repo_file(repo, path, ref=ref, client=client)
+                        for path in interesting
+                    )
+                )
+
+        contents = {
+            path: text[:4000]
+            for path, text in zip(interesting, texts, strict=True)
+            if text
+        }
         return files, contents
 
     async def get_issue(self, repo: str, issue_number: int) -> dict[str, Any]:

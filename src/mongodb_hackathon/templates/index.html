@@ -752,11 +752,18 @@
     // 5-Step Verification Timeline
     const stepList = document.getElementById("step-list");
     if (stepList) {
+      const nextSeq = (run.current_step || 0) + 1;
       const stepHtml = VERIFICATION_STEPS.map((vStep) => {
         const cp = checkpoints.find((c) => c.step_key === vStep.key || c.step_seq === vStep.seq);
-        const isCurrent = run.current_step === vStep.seq;
+        const isCurrent = !cp && status === "running" && !run.step_paused && vStep.seq === nextSeq;
         const stepStatus = cp ? cp.status : (isCurrent ? run.status : "pending");
         const hasCheckpoint = cp && cp.status === "verified_took_effect";
+        const latestProgressEv = isCurrent
+          ? events.find((e) => e.stage === vStep.key && e.message)
+          : null;
+        const activeMessage = latestProgressEv
+          ? latestProgressEv.message
+          : (vStep.seq === 1 ? "Starting worker…" : "Executing…");
 
         let detailContent = "";
         if (cp) {
@@ -823,7 +830,7 @@
               </div>
               <span class="badge ${badgeClass(stepStatus)}">${escapeHtml(formatStatus(stepStatus))}</span>
             </div>
-            <div class="step-detail">${cp ? summarizeStep(cp) : (isCurrent ? 'Executing…' : 'Pending')}</div>
+            <div class="step-detail">${cp ? summarizeStep(cp) : (isCurrent ? escapeHtml(activeMessage) : 'Pending')}</div>
             ${memoryCallout}
             ${detailContent}
           </div>
@@ -914,56 +921,70 @@
   }
 
   async function startRun() {
-    const selRepo = document.getElementById("repo-select");
-    const selectedRepo = selRepo ? selRepo.value : "";
-    const promptInput = document.getElementById("prompt-input");
-    const promptText = (promptInput ? promptInput.value : "").trim();
-
-    const firstLine = promptText.split("\n")[0].substring(0, 80).trim();
-    const issueTitle = currentIssueNumber > 0 ? (currentIssueTitle || firstLine) : (firstLine || "Autonomous release fix");
-    const issueBody = promptText || issueTitle;
-
-    const chkRespawn = document.getElementById("chk-auto-respawn");
-    const resp = await fetch("/runs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        repo: selectedRepo,
-        issue_number: currentIssueNumber,
-        issue_title: issueTitle,
-        issue_body: issueBody,
-        step_delay: currentStepDelay,
-        step_mode: currentStepMode,
-        auto_spawn: true,
-        auto_respawn: Boolean(chkRespawn && chkRespawn.checked),
-      }),
-    });
-
-    if (!resp.ok) {
-      alert("Failed to start run: " + resp.statusText);
-      return;
+    const runBtn = document.getElementById("btn-run-closer");
+    const origBtnText = runBtn ? runBtn.textContent : "Run Config Agent";
+    if (runBtn) {
+      runBtn.disabled = true;
+      runBtn.textContent = "Starting…";
     }
 
-    const data = await resp.json();
-    if (window.history && window.history.replaceState) {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("new");
-      url.searchParams.set("run_id", data.run_id);
-      window.history.replaceState({}, "", url.toString());
-    }
-    const sel = document.getElementById("run-selector");
-    const runOpt = document.createElement("option");
-    runOpt.value = data.run_id;
-    runOpt.textContent = `${data.run_id} · #${currentIssueNumber} (running)`;
-    if (sel.options.length > 0 && sel.options[0].value === "") {
-      sel.insertBefore(runOpt, sel.options[1] || null);
-    } else {
-      sel.prepend(runOpt);
-    }
-    sel.value = data.run_id;
+    try {
+      const selRepo = document.getElementById("repo-select");
+      const selectedRepo = selRepo ? selRepo.value : "";
+      const promptInput = document.getElementById("prompt-input");
+      const promptText = (promptInput ? promptInput.value : "").trim();
 
-    connectStream(data.run_id);
-    if (data.run) renderSnapshot({ run: data.run, checkpoints: [], events: [], target: {} });
+      const firstLine = promptText.split("\n")[0].substring(0, 80).trim();
+      const issueTitle = currentIssueNumber > 0 ? (currentIssueTitle || firstLine) : (firstLine || "Autonomous release fix");
+      const issueBody = promptText || issueTitle;
+
+      const chkRespawn = document.getElementById("chk-auto-respawn");
+      const resp = await fetch("/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          repo: selectedRepo,
+          issue_number: currentIssueNumber,
+          issue_title: issueTitle,
+          issue_body: issueBody,
+          step_delay: currentStepDelay,
+          step_mode: currentStepMode,
+          auto_spawn: true,
+          auto_respawn: Boolean(chkRespawn && chkRespawn.checked),
+        }),
+      });
+
+      if (!resp.ok) {
+        alert("Failed to start run: " + resp.statusText);
+        return;
+      }
+
+      const data = await resp.json();
+      if (window.history && window.history.replaceState) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("new");
+        url.searchParams.set("run_id", data.run_id);
+        window.history.replaceState({}, "", url.toString());
+      }
+      const sel = document.getElementById("run-selector");
+      const runOpt = document.createElement("option");
+      runOpt.value = data.run_id;
+      runOpt.textContent = `${data.run_id} · #${currentIssueNumber} (running)`;
+      if (sel.options.length > 0 && sel.options[0].value === "") {
+        sel.insertBefore(runOpt, sel.options[1] || null);
+      } else {
+        sel.prepend(runOpt);
+      }
+      sel.value = data.run_id;
+
+      connectStream(data.run_id);
+      if (data.run) renderSnapshot({ run: data.run, checkpoints: [], events: [], target: {} });
+    } finally {
+      if (runBtn) {
+        runBtn.disabled = false;
+        runBtn.textContent = origBtnText;
+      }
+    }
   }
 
   async function toggleAutoRespawn(enabled) {

@@ -1,0 +1,43 @@
+direction: right
+
+browser: "Operator Browser\n(/, /infra, /store + live-run.js)" { class: person }
+
+ctrl: "Operator Control Room (app.py :8000)" {
+  class: boundary
+
+  ssr: "Standalone SSR Pages\n(GET /, /infra, /store + base.html)" { class: component }
+  repos_mem: "Repos & Memory Governance\n(/api/repos, /api/memories, /invalidate)" { class: component }
+  sandbox: "Sandbox & Issues API\n(POST /sandbox/bootstrap, GET /api/issues)" { class: component }
+  lifecycle: "Run Lifecycle, Pause & Plan\n(/runs, /kill, /resume, /advance, /plan)" { class: component }
+  approve: "Approval & Rollback\n(POST /approve, /rollback)" { class: component }
+  chaos: "Target Proxy & OpenAPI\n(/chaos/*, /target/reset, /api/target-openapi)" { class: component }
+  sse: "Live Active-Run & SSE\n(/api/active-run, /stream, /runs/{id}/stream)" { class: component }
+}
+
+worker_pid: "Worker OS Subprocess\n(worker.py)" { class: container }
+target: "Target Service (:8001)" { class: container }
+atlas: "MongoDB Atlas\n(job_runs, step_checkpoints, demo_repos,\nexperience_memories, service_events)" { class: datastore }
+github: "GitHub REST API" { class: external }
+openai: "OpenAI API\n(replan & rule embeddings)" { class: external }
+scribe: "ElevenLabs Scribe v2\n(transcribe_operator_audio)" { class: external }
+
+browser -> ctrl.ssr: "GET /, /infra, /store" { class: edge }
+browser -> ctrl.repos_mem: "Add repo, add/filter/toggle rule" { class: edge }
+browser -> ctrl.sandbox: "Bootstrap & load repo issues" { class: edge }
+browser -> ctrl.lifecycle: "Run, Advance, Plan Edit, SIGKILL, Resume" { class: edge }
+browser -> ctrl.approve: "Text or WebM audio" { class: edge }
+browser -> ctrl.chaos: "Toggle chaos, reset, view OpenAPI" { class: edge }
+ctrl.sse -> browser: "Shared #live-run-strip EventSource" { class: edge }
+
+ctrl.repos_mem -> github: "Optional sandbox repo setup" { class: edge }
+ctrl.repos_mem -> openai: "Embed repo rules" { class: edge }
+ctrl.repos_mem -> atlas: "Upsert demo_repos & memories" { class: edge }
+ctrl.sandbox -> github: "Ensure repo & list issues" { class: edge }
+ctrl.lifecycle -> worker_pid: "Popen & os.kill(SIGKILL)" { class: edge }
+ctrl.lifecycle -> openai: "Re-plan Step 1 FixPlan" { class: edge }
+ctrl.lifecycle -> atlas: "Insert JobRun, update step_1_plan, unpause" { class: edge }
+ctrl.approve -> scribe: "Transcribe voice audio" { class: edge }
+ctrl.approve -> worker_pid: "Respawn if crashed/completed" { class: edge }
+ctrl.approve -> atlas: "Set approval_granted / halt_requested" { class: edge }
+ctrl.chaos -> target: "POST /chaos/{mode}, /reset, GET /openapi.json" { class: edge }
+atlas -> ctrl.sse: "watch_run_stream() or 2s diff" { class: edge }

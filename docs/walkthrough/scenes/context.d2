@@ -1,0 +1,28 @@
+direction: right
+
+operator: "Operator\n(Workspace /, /infra, /store)" { class: person }
+developer: "Developer / Evaluator\n(mise tasks, seed.py, pytest, run_evals)" { class: person }
+principal: "Scoped Human Principal\n(RBAC / delegations - design only)" { class: [person; warn] }
+
+finishline: "FinishLine\n(Track 3: Finish the Job)" { class: system }
+
+atlas: "MongoDB Atlas\n(Transactions, Vector Search,\nChange Streams)" { class: external }
+github: "GitHub REST API\n(Demo Repos, PRs, Issues)" { class: external }
+openai: "OpenAI API\n(gpt-4.1-mini & text-embedding-3-small)" { class: external }
+elevenlabs: "ElevenLabs API\n(eleven_flash_v2_5 TTS & scribe_v2 STT)" { class: external }
+telemetry: "LangSmith & Logfire\n(Traces & OTel Spans)" { class: external }
+
+voyage: "Voyage AI\n(docs & .env.example only)" { class: [external; warn] }
+htmx: "HTMX & Multi-Service Targets\n(docs only; replaced by JS/SSE)" { class: [external; warn] }
+
+operator -> finishline: "HTTP + SSE + WebM audio" { class: edge }
+developer -> finishline: "mise run & CLI scripts" { class: edge }
+principal -> finishline: "Planned policy scopes" { class: [edge; warn] }
+
+finishline -> atlas: "PyMongo Async + watch()" { class: edge }
+finishline -> github: "HTTPS REST + gh token" { class: edge }
+finishline -> openai: "Pydantic AI + embeddings" { class: edge }
+finishline -> elevenlabs: "TTS briefings + STT audio" { class: edge }
+finishline -> telemetry: "trace() + OTel spans" { class: edge }
+finishline -> voyage: "Unused placeholder" { class: [edge; warn] }
+finishline -> htmx: "Replaced in implementation" { class: [edge; warn] }

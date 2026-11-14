@@ -1,0 +1,80 @@
+direction: right
+
+ctrl: "Control Room (app.py)" { class: container }
+worker: "Standalone Worker (worker.py)" { class: container }
+seed: "Seed Script (seed.py)" { class: container }
+
+atlas: "MongoDB Atlas (finishline database)" {
+  class: boundary
+
+  job_runs: "job_runs (no validator)" {
+    class: entity
+    run_id: "string (unique)"
+    repo: "string"
+    status: "RunStatus"
+    current_step: "int"
+    worker_pid: "int | null"
+    step_mode: "auto | step_by_step"
+    step_paused: "bool + paused_after_step"
+    halt_requested: "bool"
+    approval_granted: "bool"
+  }
+
+  step_checkpoints: "step_checkpoints (strict JSON Schema)" {
+    class: entity
+    run_id_step_key: "(run_id, step_key) unique"
+    idempotency_key: "string (unique)"
+    status: "StepStatus"
+    attempts: "int >= 0"
+    took_effect: "bool"
+    compensating_action: "dict"
+    pre_state: "unused (always empty)"
+  }
+
+  experience_memories: "experience_memories (Vector Search 1536d)" {
+    class: entity
+    memory_id: "string (unique)"
+    kind: "github_fix | drift_playbook | repo_rule"
+    source_repo: "indexed + vector pre-filter"
+    status: "active | invalidated"
+    embedding: "1536-dim dotProduct"
+    field_mapping: "dict"
+  }
+
+  demo_repos: "demo_repos (curated repo registry)" {
+    class: entity
+    repo: "string (unique)"
+    display_name: "label + description"
+    is_live: "bool"
+    default_prompt: "string"
+  }
+
+  service_events: "service_events (7-day TTL & Change Streams)" {
+    class: entity
+    run_id: "indexed with created_at"
+    event_type: "string"
+    message: "string"
+    expires_at: "TTL expireAfterSeconds 0"
+  }
+
+  design_cols: "Design-Only Collections\n(delegations, policies, action_intents)" { class: [datastore; warn] }
+}
+
+target_mem: "Target _ServiceState\n(in-memory dicts, lost on restart)" { class: datastore }
+audio_fs: "Audio Files\n(src/mongodb_hackathon/static/audio)" { class: bucket }
+
+ctrl -> atlas.job_runs: "Create, PID, pause/advance, approve, halt" { class: edge }
+ctrl -> atlas.step_checkpoints: "Update Step 1 FixPlan" { class: edge }
+ctrl -> atlas.experience_memories: "Add, filter, invalidate / restore" { class: edge }
+ctrl -> atlas.demo_repos: "List & register repos" { class: edge }
+ctrl -> atlas.service_events: "Append & watch()" { class: edge }
+worker -> atlas.job_runs: "Update status, poll pause & approval" { class: edge }
+worker -> atlas.step_checkpoints: "ACID tx upsert & reload Step 1" { class: edge }
+worker -> atlas.experience_memories: "Scoped search & learn by repo" { class: edge }
+worker -> atlas.service_events: "Emit step events" { class: edge }
+seed -> atlas.demo_repos: "Upsert starter repos" { class: edge }
+seed -> atlas.experience_memories: "Upsert playbooks, rules & issues" { class: edge }
+ctrl -> target_mem: "Toggle chaos, reset, OpenAPI" { class: edge }
+worker -> target_mem: "Deploy, verify, delete" { class: edge }
+worker -> audio_fs: "Write MP3 to AUDIO_DIR" { class: edge }
+ctrl -> audio_fs: "Mount STATIC_DIR at /static" { class: edge }

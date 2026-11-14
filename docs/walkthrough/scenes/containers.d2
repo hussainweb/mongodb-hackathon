@@ -1,0 +1,42 @@
+direction: right
+
+browser: "Operator Browser\n(/, /infra, /store + live-run.js SSE)" { class: person }
+
+fl: "FinishLine Local Runtime" {
+  class: boundary
+
+  supervisor: "Supervisor CLI\n(mongodb_hackathon.__init__)" { class: container }
+  control_room: "Operator Control Room\n(FastAPI :8000, 3 SSR pages + SSE)" { class: container }
+  target: "Target Deployment Service\n(FastAPI :8001, in-memory)" { class: container }
+  worker: "Standalone Worker\n(worker.py OS subprocess)" { class: container }
+  oneshot: "One-Shot CLI & Mise Tasks\n(seed, evals, check, walkthrough)" { class: container }
+  audio_fs: "Audio Briefing Files\n(src/mongodb_hackathon/static/audio)" { class: bucket }
+
+  supervisor -> control_room: "Spawns uvicorn :8000" { class: edge }
+  supervisor -> target: "Spawns uvicorn :8001" { class: edge }
+  control_room -> worker: "Popen / os.kill SIGKILL" { class: edge }
+  control_room -> target: "HTTP chaos, reset & /openapi" { class: edge }
+  worker -> target: "HTTP deploy, openapi, verify, delete" { class: edge }
+  worker -> audio_fs: "Writes AUDIO_DIR MP3s" { class: edge }
+  control_room -> audio_fs: "Serves STATIC_DIR /static" { class: edge }
+}
+
+atlas: "MongoDB Atlas\n(finishline database)" { class: datastore }
+github: "GitHub REST API\n(api.github.com)" { class: external }
+openai: "OpenAI API\n(LLM & embeddings)" { class: external }
+elevenlabs: "ElevenLabs API\n(TTS & Scribe v2 STT)" { class: external }
+telemetry: "LangSmith & Logfire" { class: external }
+
+browser -> fl.control_room: "3 pages, JSON forms & EventSource" { class: edge }
+fl.control_room -> atlas: "Runs, repos, memories & watch()" { class: edge }
+fl.control_room -> github: "Issues & sandbox repo creation" { class: edge }
+fl.control_room -> openai: "Re-plan Step 1 & embed rules" { class: edge }
+fl.control_room -> elevenlabs: "Transcribe operator audio" { class: edge }
+fl.worker -> atlas: "ACID tx checkpoints & Vector Search" { class: edge }
+fl.worker -> github: "Branch, commit, PR, comment, rollback" { class: edge }
+fl.worker -> openai: "Plan fix, adapt drift, embed" { class: edge }
+fl.worker -> elevenlabs: "Synthesize briefing MP3" { class: edge }
+fl.worker -> telemetry: "Trace spans" { class: edge }
+fl.oneshot -> atlas: "Seed repos/rules & run evals" { class: edge }
+fl.oneshot -> github: "Fetch seed issues" { class: edge }
+fl.oneshot -> fl.target: "ASGI in-process (evals)" { class: edge }

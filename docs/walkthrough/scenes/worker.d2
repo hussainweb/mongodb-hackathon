@@ -1,0 +1,49 @@
+direction: right
+
+wrk: "Standalone Worker (worker.py)" {
+  class: boundary
+
+  entry: "execute_job\n(PID mark & checkpoint load)" { class: component }
+  step1: "Step 1: step_1_plan\n(repo_rule + github_fix -> FixPlan)" { class: component }
+  pause: "Step-by-Step Breakpoint\n(_pause_if_step_by_step + Plan Reload)" { class: component }
+  step2: "Step 2: step_2_github_patch\n(Branch & FixPlan.patch_filename)" { class: component }
+  step3: "Step 3: step_3_deploy_and_verify\n(Gate, deploy, drift adapt, verify probe)" { class: component }
+  gate: "Approval Gate Polling\n(_wait_for_operator_approval)" { class: component }
+  step4: "Step 4: step_4_github_pr\n(PR, marker comment on issue/PR, label)" { class: component }
+  step5: "Step 5: step_5_finalize\n(Learn repo-scoped rule & COMPLETED)" { class: component }
+  rollback: "Compensating Rollback\n(_check_halt_or_rollback)" { class: component }
+
+  entry -> step1: "Load existing_cps" { class: edge }
+  step1 -> pause: "step_mode == step_by_step" { class: edge }
+  pause -> step2: "Unpaused -> reload step_1_plan" { class: edge }
+  step1 -> step2: "Auto pacing -> proceed" { class: edge }
+  step2 -> step3: "Optional pause -> not halted" { class: edge }
+  step3 -> gate: "require_approval_gate or 422 low conf" { class: edge }
+  gate -> step3: "Approved -> resume deploy" { class: edge }
+  gate -> rollback: "Aborted -> halt_requested" { class: edge }
+  step3 -> step4: "VERIFIED_TOOK_EFFECT" { class: edge }
+  step4 -> step5: "PR opened & labeled" { class: edge }
+  pause -> rollback: "halt_requested" { class: edge }
+  step2 -> rollback: "halt_requested" { class: edge }
+  step3 -> rollback: "halt_requested" { class: edge }
+}
+
+atlas: "MongoDB Atlas\n(step_checkpoints, job_runs,\nexperience_memories, service_events)" { class: datastore }
+openai: "OpenAI / Pydantic AI\n(FixPlan & DriftAdaptationPlan)" { class: external }
+github: "GitHub REST API\n(or dry-run stub)" { class: external }
+target: "Target Service (:8001)\n(health, v1/v2, openapi, verify, delete)" { class: container }
+elevenlabs: "ElevenLabs TTS\n(briefing MP3)" { class: external }
+
+wrk.step1 -> atlas: "source_repo Vector Search + tx" { class: edge }
+wrk.step1 -> openai: "plan_release_fix()" { class: edge }
+wrk.pause -> atlas: "Poll step_paused & reload FixPlan" { class: edge }
+wrk.step2 -> github: "ensure_branch & upsert_file" { class: edge }
+wrk.step3 -> target: "GET health, POST v1/v2, GET openapi & verify" { class: edge }
+wrk.step3 -> openai: "adapt_to_schema_drift()" { class: edge }
+wrk.step3 -> atlas: "source_repo drift search + tx" { class: edge }
+wrk.gate -> elevenlabs: "synthesize_briefing() -> AUDIO_DIR" { class: edge }
+wrk.gate -> atlas: "Poll job_runs every 0.5s" { class: edge }
+wrk.step4 -> github: "PR, comment & label on issue or PR" { class: edge }
+wrk.step5 -> atlas: "Upsert learned rule (source_repo) + COMPLETED" { class: edge }
+wrk.rollback -> target: "DELETE /deployments/{id}" { class: edge }
+wrk.rollback -> github: "rollback_changes()" { class: edge }

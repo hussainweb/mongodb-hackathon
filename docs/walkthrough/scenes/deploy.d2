@@ -1,0 +1,29 @@
+direction: right
+
+browser: "LAN / Tailscale Operator\n(Plain HTTP, no auth)" { class: person }
+
+host: "Local Machine (SERVER_HOST=0.0.0.0)" {
+  class: node
+
+  sup: "mise & mongodb-hackathon CLI\n(spawns both ports, no health wait)" { class: container }
+  ctrl: "Control Room (:8000)\n(proxy-headers, CORS *, no /health)" { class: container }
+  tgt: "Target Service (:8001)\n(proxy-headers, CORS *, GET /health)" { class: container }
+  wrk: "Worker Subprocess\n(start_new_session=True, DEVNULL)" { class: container }
+  env: ".env & gh CLI token\n(10 undocumented env vars in code)" { class: [bucket; warn] }
+
+  sup -> ctrl: "Starts uvicorn" { class: edge }
+  sup -> tgt: "Starts uvicorn" { class: edge }
+  ctrl -> wrk: "Popen / SIGKILL (un-reaped)" { class: edge }
+  ctrl -> env: "Reads Settings" { class: edge }
+  wrk -> env: "Reads Settings + load_dotenv()" { class: edge }
+}
+
+atlas: "MongoDB Atlas Cloud\n(finishline DB, no backup script)" { class: datastore }
+apis: "OpenAI / GitHub / ElevenLabs\nLangSmith / Logfire" { class: external }
+prod_missing: "Production Infra\n(No Docker, IaC, CI/CD, TLS, or RBAC)" { class: [node; warn] }
+
+browser -> host.ctrl: "HTTP :8000" { class: edge }
+host.ctrl -> atlas: "TLS SRV + watch()" { class: edge }
+host.wrk -> atlas: "TLS SRV + ACID tx" { class: edge }
+host.wrk -> apis: "HTTPS REST & telemetry" { class: edge }
+host.ctrl -> apis: "GitHub, OpenAI & ElevenLabs STT" { class: edge }

@@ -1,0 +1,33 @@
+direction: right
+
+worker: "Standalone Worker\n(worker.py)" { class: container }
+ctrl: "Control Room\n(app.py :8000 /infra)" { class: container }
+
+tgt: "Target Deployment Service (target_service.py :8001)" {
+  class: boundary
+
+  chaos: "Chaos & Inspection\n(GET /health, /state; POST /chaos/mode, /reset)" { class: component }
+  v1: "POST /v1/deployments\n(webhook_url, rate_limit)" { class: component }
+  v2: "POST /v2/deployments\n(callback_uri, max_rps, env_tier)" { class: component }
+  openapi: "GET /openapi.json\n(live schema contract)" { class: component }
+  verify: "GET /verify/{deployment_id}\n(true active=true/false probe)" { class: component }
+  delete: "DELETE /deployments/{deployment_id}\n(compensating rollback)" { class: component }
+  state: "_ServiceState\n(in-memory dicts, 40-entry log)" { class: datastore }
+  gate: "ChaosMode.REQUIRE_APPROVAL_GATE\n(read via GET /health before Step 3 deploy)" { class: component }
+
+  chaos -> state: "Mutates chaos_mode / clears dicts" { class: edge }
+  v1 -> state: "202 dropped or 201 active" { class: edge }
+  v2 -> state: "Idempotency check & activate" { class: edge }
+  verify -> state: "Reads active flag" { class: edge }
+  delete -> state: "Removes deployment" { class: edge }
+  gate -> chaos: "Exposed in /health & /state" { class: edge }
+}
+
+ctrl -> tgt.chaos: "Proxy chaos toggles & state poll" { class: edge }
+ctrl -> tgt.openapi: "Proxy schema for /infra diff" { class: edge }
+worker -> tgt.chaos: "Pre-deploy GET /health gate check" { class: edge }
+worker -> tgt.v1: "Initial deploy attempt" { class: edge }
+worker -> tgt.openapi: "Fetch v2 schema on 422" { class: edge }
+worker -> tgt.v2: "Adapted retry" { class: edge }
+worker -> tgt.verify: "Poll true active state" { class: edge }
+worker -> tgt.delete: "Rollback delete" { class: edge }

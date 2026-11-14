@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from langsmith import trace
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from mongodb_hackathon.config import Settings, get_settings
@@ -38,12 +38,12 @@ def configure_observability() -> None:
 def build_model(
     settings: Settings, model_override: Model | None = None
 ) -> Model | None:
-    """Create OpenAIChatModel if API key is present, or return explicit test override."""
+    """Create OpenAIResponsesModel if API key is present, or return explicit test override."""
     if model_override is not None:
         return model_override
     if not settings.openai_api_key:
         return None
-    return OpenAIChatModel(
+    return OpenAIResponsesModel(
         settings.openai_model,
         provider=OpenAIProvider(api_key=settings.openai_api_key),
     )

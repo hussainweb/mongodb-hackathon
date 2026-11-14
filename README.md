@@ -13,7 +13,7 @@ FinishLine separates **only-sent** from **actually took-effect**, survives hard 
 3. **Target Deployment Microservice (`port 8001`, [target_service.py](src/mongodb_hackathon/target_service.py))**:
    - Simulates `normal`, `silent_drop_202` (HTTP `202 Accepted` while `GET /verify/{id}` reveals `active=False`), `drift_v2` (`/v1/deployments` returns `422`, requiring OpenAPI `/v2/deployments` mapping), and `require_approval_gate`.
 4. **Pydantic AI Agents + Observability ([agent.py](src/mongodb_hackathon/agent.py))**:
-   - OpenAI (`gpt-4.1-mini`) structured planning (`FixPlan`) and drift adaptation (`DriftAdaptationPlan`) with deterministic fallback, **LangSmith** nested `trace(...)` spans, and **Logfire** instrumentation when configured.
+   - OpenAI (`gpt-6-luna`) structured planning (`FixPlan`) and drift adaptation (`DriftAdaptationPlan`) with deterministic fallback, **LangSmith** nested `trace(...)` spans, and **Logfire** instrumentation when configured.
 5. **ElevenLabs Voice Escalation ([voice.py](src/mongodb_hackathon/voice.py))**:
    - Generates operator TTS briefings (`eleven_flash_v2_5`) on ambiguous policy/drift gates and transcribes operator voice decisions via **Scribe v2** (`scribe_v2`).
 

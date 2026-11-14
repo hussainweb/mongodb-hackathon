@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     mongodb_db: str = Field(default="finishline", alias="MONGODB_DB")
 
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
+    openai_model: str = Field(default="gpt-6-luna", alias="OPENAI_MODEL")
     embedding_model: str = Field(
         default="text-embedding-3-small", alias="EMBEDDING_MODEL"
     )

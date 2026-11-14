@@ -129,6 +129,10 @@
         <button id="btn-kill" class="btn btn-danger btn-sm hidden" onclick="killWorker()">SIGKILL Worker</button>
         <button id="btn-resume" class="btn btn-ok btn-sm hidden" onclick="resumeWorker()">Resume Fresh PID</button>
         <button id="btn-rollback" class="btn btn-sm hidden" onclick="triggerRollback()">Rollback</button>
+        <label style="display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); cursor: pointer; margin-left: 4px;" title="Automatically respawn a fresh PID 3s after audience/operator SIGKILL">
+          <input type="checkbox" id="chk-auto-respawn" onchange="toggleAutoRespawn(this.checked)" />
+          Auto-Respawn (3s)
+        </label>
       </div>
     </div>
 
@@ -166,7 +170,7 @@
           <input type="text" id="plan-pr-title" style="width: 100%; font-size: 12px;" />
         </div>
         <div>
-          <label for="plan-patch-content" style="font-size: 11.5px; color: var(--muted); display: block; margin-bottom: 2px;">Patch Content (service_config.json)</label>
+          <label for="plan-patch-content" style="font-size: 11.5px; color: var(--muted); display: block; margin-bottom: 2px;">Patch Content</label>
           <textarea id="plan-patch-content" rows="4" style="width: 100%; font-family: var(--font-mono); font-size: 12px; line-height: 1.4; resize: vertical;"></textarea>
         </div>
         <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;">
@@ -532,9 +536,11 @@
     const btnKill = document.getElementById("btn-kill");
     const btnResume = document.getElementById("btn-resume");
     const btnRollback = document.getElementById("btn-rollback");
+    const chkRespawn = document.getElementById("chk-auto-respawn");
     if (btnKill) btnKill.classList.toggle("hidden", !(status === "running" && run.worker_pid));
     if (btnResume) btnResume.classList.toggle("hidden", !(status === "crashed" || (status === "running" && !run.worker_pid) || run.step_paused));
     if (btnRollback) btnRollback.classList.toggle("hidden", !["running", "crashed", "awaiting_approval", "completed"].includes(status));
+    if (chkRespawn && typeof run.auto_respawn === "boolean") chkRespawn.checked = run.auto_respawn;
 
     // Paused-at-Checkpoint Banner
     const pauseBanner = document.getElementById("pause-banner");
@@ -703,6 +709,7 @@
     const issueTitle = currentIssueNumber > 0 ? (currentIssueTitle || firstLine) : (firstLine || "Autonomous release fix");
     const issueBody = promptText || issueTitle;
 
+    const chkRespawn = document.getElementById("chk-auto-respawn");
     const resp = await fetch("/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -714,6 +721,7 @@
         step_delay: currentStepDelay,
         step_mode: currentStepMode,
         auto_spawn: true,
+        auto_respawn: Boolean(chkRespawn && chkRespawn.checked),
       }),
     });
 
@@ -735,6 +743,15 @@
 
     connectStream(data.run_id);
     if (data.run) renderSnapshot({ run: data.run, checkpoints: [], events: [], target: {} });
+  }
+
+  async function toggleAutoRespawn(enabled) {
+    if (!currentRunId) return;
+    await fetch(`/runs/${currentRunId}/auto-respawn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: Boolean(enabled) }),
+    });
   }
 
   async function savePlan() {

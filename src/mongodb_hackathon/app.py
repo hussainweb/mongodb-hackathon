@@ -40,6 +40,7 @@ from mongodb_hackathon.models import (
 )
 from mongodb_hackathon.mongo import MongoStore
 from mongodb_hackathon.seed import _build_starter_repos, seed_atlas
+from mongodb_hackathon.tofu_adapter import inspect_live_docker_workers
 from mongodb_hackathon.voice import transcribe_operator_audio
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -81,6 +82,7 @@ class StartRunRequest(BaseModel):
     step_delay: float = Field(default=0.5, ge=0.0, le=5.0)
     step_mode: str = "auto"
     auto_spawn: bool = True
+    auto_respawn: bool = False
 
 
 class AdvanceRunRequest(BaseModel):
@@ -515,6 +517,37 @@ async def store_page(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/super-secret-page", response_class=HTMLResponse)
+async def super_secret_page(request: Request) -> HTMLResponse:
+    """Render the shareable audience/judge interactive Worker Lane + SIGKILL page."""
+    store, _, http, settings = _deps(request)
+    requested_run_id = request.query_params.get("run_id", "").strip()
+    initial_run_id = await _resolve_active_run_id(store, requested_run_id)
+    initial_snapshot = (
+        await _build_run_snapshot(store, http, initial_run_id)
+        if initial_run_id
+        else None
+    )
+    return templates.TemplateResponse(
+        request,
+        "super_secret.html",
+        {
+            "active_page": "secret",
+            "initial_run_id": initial_run_id,
+            "initial_snapshot": initial_snapshot,
+            "sandbox_repo": settings.github_sandbox_repo.strip()
+            or "dry-run/payments-infra",
+        },
+    )
+
+
+@app.get("/api/docker-topology")
+async def get_docker_topology(simulate: bool = False) -> JSONResponse:
+    """Return live OpenTofu-managed Docker worker containers and optional live /ingest traffic tick."""
+    data = await inspect_live_docker_workers(simulate_traffic=simulate)
+    return JSONResponse(data)
+
+
 @app.post("/sandbox/bootstrap")
 async def bootstrap_sandbox(request: Request, repo: str = "") -> JSONResponse:
     """Ensure the public GitHub sandbox repository, seed issues, and Atlas playbooks."""
@@ -614,6 +647,7 @@ async def create_and_start_run(request: Request, body: StartRunRequest) -> JSONR
         target_service_url=settings.target_service_url,
         status=RunStatus.RUNNING,
         step_mode=body.step_mode,
+        auto_respawn=body.auto_respawn,
     )
     await store.create_run(run)
     await store.emit_event(
@@ -646,13 +680,58 @@ async def create_and_start_run(request: Request, body: StartRunRequest) -> JSONR
     )
 
 
+async def _auto_respawn_worker(
+    store: MongoStore, run_id: str, delay: float = 3.0, step_delay: float = 0.5
+) -> None:
+    """Auto-respawn a fresh worker PID after a SIGKILL when auto_respawn is enabled."""
+    await asyncio.sleep(delay)
+    run = await store.get_run(run_id)
+    if not run or run.status != RunStatus.CRASHED or run.halt_requested:
+        return
+    pid = _spawn_worker_process(run_id, step_delay=step_delay)
+    await store.update_run(run_id, status=RunStatus.RUNNING.value, worker_pid=pid)
+    await store.emit_event(
+        run_id,
+        f"step_{max(run.current_step, 1)}",
+        "worker_resumed",
+        f"Auto-respawned fresh OS worker PID {pid} from MongoDB Atlas checkpoints.",
+        {"worker_pid": pid, "auto_respawn": True},
+    )
+
+
+@app.post("/runs/{run_id}/auto-respawn")
+async def set_auto_respawn(
+    request: Request, run_id: str, enabled: bool = True
+) -> JSONResponse:
+    """Toggle automatic 3s worker respawn after SIGKILL for audience chaos demos."""
+    store, _, _, _ = _deps(request)
+    run = await store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    if request.headers.get("content-type", "").startswith("application/json"):
+        with suppress(Exception):
+            raw = await request.json()
+            if isinstance(raw, dict) and "enabled" in raw:
+                enabled = bool(raw["enabled"])
+    await store.update_run(run_id, auto_respawn=enabled)
+    return JSONResponse({"run_id": run_id, "auto_respawn": enabled})
+
+
 @app.post("/runs/{run_id}/kill")
-async def kill_worker_pid(request: Request, run_id: str) -> JSONResponse:
+async def kill_worker_pid(
+    request: Request, run_id: str, source: str = ""
+) -> JSONResponse:
     """Send SIGKILL to the active worker OS process to demonstrate crash survival."""
     store, _, _, _ = _deps(request)
     run = await store.get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    if source == "audience" and (run.status != RunStatus.RUNNING or not run.worker_pid):
+        raise HTTPException(
+            status_code=409,
+            detail="Worker is not currently running (already crashed or finished).",
+        )
 
     killed = False
     pid = run.worker_pid
@@ -668,19 +747,27 @@ async def kill_worker_pid(request: Request, run_id: str) -> JSONResponse:
         status=RunStatus.CRASHED.value,
         worker_pid=None,
     )
+    actor = "Audience" if source == "audience" else "Operator"
     await store.emit_event(
         run_id,
         f"step_{max(run.current_step, 1)}",
         "worker_sigkilled",
-        f"Simulated crash: sent SIGKILL to worker PID {pid or 'N/A'}. Checkpoints preserved in MongoDB Atlas.",
-        {"killed_pid": pid, "sigkill_delivered": killed},
+        (
+            f"{actor} triggered SIGKILL on worker PID {pid or 'N/A'}. "
+            "Checkpoints preserved in MongoDB Atlas."
+        ),
+        {"killed_pid": pid, "sigkill_delivered": killed, "source": source or "operator"},
     )
+    if run.auto_respawn and not run.halt_requested:
+        asyncio.create_task(_auto_respawn_worker(store, run_id))
+
     updated = await store.get_run(run_id)
     return JSONResponse(
         {
             "run_id": run_id,
             "killed_pid": pid,
             "sigkill_delivered": killed,
+            "auto_respawn": run.auto_respawn,
             "run": updated.model_dump(mode="json") if updated else None,
         }
     )

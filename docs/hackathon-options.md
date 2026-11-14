@@ -4,11 +4,14 @@ A decision brief comparing candidate project directions for our 2-person, 1-day 
 
 ## Hackathon Constraints & Judging Criteria
 
-- **Mandatory Infrastructure:** MongoDB Atlas Sandbox (`Cluster0`, Dedicated M10, MongoDB 9.0.7 — supports Search, Vector Search, Change Streams, JSON Schema validation). Public GitHub repo, New Work Only, 1-minute submission video + 3-minute live demo.
+- **Event & Schedule (Nov 14, The Quay, Toronto):** 9:00 AM Doors & team formation · **10:45 AM** Hacking begins · **5:00 PM** Submissions due · **5:15–6:45 PM** Round 1 judging · **7:00 PM** Final round (Top 6 teams) · **8:15 PM** Winners announced. *(See [hackathon-resource-guide.md](hackathon-resource-guide.md) for all official links and credit redemption steps.)*
+- **Mandatory Infrastructure:** MongoDB Atlas Sandbox (`Cluster0`, Dedicated M10, MongoDB 9.0.7 — supports Search, Vector Search, Automated Embeddings, Change Streams, JSON Schema validation). Original work only, public GitHub repo, accessible demo link, up to 4 team members, 1-minute submission video (showing code & functionality, verify video + audio playback) + concise project description on Cerebral Valley (ensure all team members are added) + 3-minute live in-person demo.
 - **Strictly Prohibited (Instant DQ):** Streamlit apps, basic RAG apps, dashboard-as-main-feature, AI job application screeners, image analyzers, mental health/medical/nutrition/education/personality/sports analyzers.
 - **Round 1 Judging:** **35%** Technical Demo · **30%** Implementation Difficulty · **20%** Impact · **15%** Creativity *(Round 2 top 6: 25% each)*.
-- **Prizes & Side Tracks:** Overall 1st/2nd/3rd (MongoDB + LangSmith + ElevenLabs) + **Best Project Built with ElevenLabs** side track.
-- **Planned Core Stack:** Python 3.14, FastAPI + minimal HTMX/SSE live operator theater (no heavy SPA/CSS time sink), MongoDB Atlas, Pydantic AI + Logfire, LangSmith tracing/evals, and a targeted ElevenLabs voice hook.
+- **Prizes & Partner Credits:**
+  - *Prizes:* 1st ($7k MongoDB + $3k LangSmith + 3 mo ElevenLabs Pro), 2nd ($5k MongoDB + $2k LangSmith), 3rd ($3k MongoDB + $1k LangSmith), plus **Best Project Built with ElevenLabs** (3 mo Scale Tier).
+  - *Hacker Credits:* **Voyage AI** 200M free tokens (add payment method for Tier 1 rate limits), **ElevenLabs** 1 mo Creator / 131k credits (Discord `#coupon-codes`), **LangSmith** $50 credits + Deployments (Airtable form).
+- **Planned Core Stack:** Python 3.14, FastAPI + minimal HTMX/SSE live operator theater (no heavy SPA/CSS time sink), MongoDB Atlas, Pydantic AI + Logfire, LangSmith tracing/evals, Voyage AI embeddings/reranking (or Atlas Automated Embeddings), and a targeted ElevenLabs voice hook.
 
 ---
 

@@ -13,8 +13,21 @@
     <div class="page-subtitle">Configure fault modes on the deployment target (<code>:8001</code>) and simulate deployments or health probes directly.</div>
   </div>
   <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+    <a href="/super-secret-page" target="_blank" class="btn btn-primary btn-sm">Open Live Worker Lane ↗</a>
     <button type="button" class="btn btn-ghost btn-sm" onclick="refreshTargetState()">Refresh State</button>
     <button type="button" class="btn btn-sm" onclick="resetTarget()">Reset Target to Normal</button>
+  </div>
+</div>
+
+<!-- Demo Presenter Guide Strip -->
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-subtle); font-size: 12.5px;">
+  <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+    <span class="badge badge-info">Demo Flow</span>
+    <span><strong>1.</strong> Start baseline Docker or inject a fault mode below</span>
+    <span style="color: var(--muted);">→</span>
+    <span><strong>2.</strong> Show <a href="/super-secret-page" target="_blank">Live Worker Lane ↗</a> (300 RPS burst)</span>
+    <span style="color: var(--muted);">→</span>
+    <span><strong>3.</strong> Trigger a run in <a href="/">Workspace</a> &amp; watch containers + Wire Log update live</span>
   </div>
 </div>
 
@@ -210,6 +223,26 @@
       </div>
 
       <div id="sample-result-banner" class="sim-result-banner hidden" style="margin-bottom: 10px;" aria-live="polite"></div>
+
+      <div id="live-docker-workers-list" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin-bottom: 12px;">
+        {% if docker_topology and docker_topology.workers %}
+          {% for w in docker_topology.workers %}
+            <div style="border: 1px solid {% if w.healthy and w.active %}#a7f3d0{% else %}#fecaca{% endif %}; background: {% if w.healthy and w.active %}#ecfdf5{% else %}#fef2f2{% endif %}; border-radius: 8px; padding: 8px 10px; font-size: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+                <strong class="mono">{{ w.name }}</strong>
+                <span class="badge {% if w.healthy and w.active %}badge-ok{% else %}badge-danger{% endif %}" style="font-size: 10.5px;">{{ 'healthy' if (w.healthy and w.active) else 'unhealthy' }}</span>
+              </div>
+              <div class="mono" style="font-size: 11px; color: var(--text-secondary); margin-top: 3px;">
+                {{ w.container_id }} · :{{ w.port }} · {{ w.max_rps }} RPS · {{ w.api_version }} ({{ w.env_tier }})
+              </div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div style="grid-column: 1 / -1; font-size: 12px; color: var(--muted); padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px;">
+            No OpenTofu-managed Docker containers running. Click <strong>Start Docker</strong> on a sample below to launch a live container.
+          </div>
+        {% endif %}
+      </div>
 
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px;">
         {% for s in samples or [] %}
@@ -610,11 +643,47 @@
 
   function updateDockerCountBadge(topology) {
     const badge = document.getElementById("live-docker-count");
-    if (!badge || !topology) return;
-    const count = (topology.workers || []).length;
-    badge.textContent = `${count} Docker container(s)`;
-    badge.className = count > 0 ? "badge badge-ok" : "badge badge-info";
+    if (badge && topology) {
+      const count = (topology.workers || []).length;
+      const cap = Number(topology.total_capacity_rps || 0);
+      badge.textContent = count > 0 ? `${count} Docker container(s) · ${cap} RPS` : "0 Docker container(s)";
+      badge.className = count > 0 ? "badge badge-ok" : "badge badge-info";
+    }
+    const listEl = document.getElementById("live-docker-workers-list");
+    if (listEl && topology) {
+      const workers = topology.workers || [];
+      if (workers.length === 0) {
+        listEl.innerHTML = '<div style="grid-column: 1 / -1; font-size: 12px; color: var(--muted); padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px;">No OpenTofu-managed Docker containers running. Click <strong>Start Docker</strong> on a sample below to launch a live container.</div>';
+      } else {
+        listEl.innerHTML = workers.map((w) => {
+          const ok = Boolean(w.healthy && w.active);
+          return `
+            <div style="border: 1px solid ${ok ? '#a7f3d0' : '#fecaca'}; background: ${ok ? '#ecfdf5' : '#fef2f2'}; border-radius: 8px; padding: 8px 10px; font-size: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+                <strong class="mono">${FinishLineLiveRun.escapeHtml(w.name || '')}</strong>
+                <span class="badge ${ok ? 'badge-ok' : 'badge-danger'}" style="font-size: 10.5px;">${ok ? 'healthy' : 'unhealthy'}</span>
+              </div>
+              <div class="mono" style="font-size: 11px; color: var(--text-secondary); margin-top: 3px;">
+                ${FinishLineLiveRun.escapeHtml(w.container_id || '')} · :${FinishLineLiveRun.escapeHtml(String(w.port || ''))} · ${FinishLineLiveRun.escapeHtml(String(w.max_rps || 120))} RPS · ${FinishLineLiveRun.escapeHtml(w.api_version || 'v1')} (${FinishLineLiveRun.escapeHtml(w.env_tier || 'staging')})
+              </div>
+            </div>
+          `;
+        }).join("");
+      }
+    }
   }
+
+  async function pollInfraDockerTopology() {
+    try {
+      const resp = await fetch("/api/docker-topology");
+      if (resp.ok) {
+        updateDockerCountBadge(await resp.json());
+      }
+    } catch (e) {
+      console.warn("Docker topology poll failed:", e);
+    }
+  }
+  setInterval(pollInfraDockerTopology, 3000);
 
   async function startSampleDocker(sampleId, btn) {
     if (btn) btn.disabled = true;

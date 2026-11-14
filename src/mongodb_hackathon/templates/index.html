@@ -235,10 +235,19 @@
 <aside class="live-mini-dock" id="live-mini-dock" aria-label="Live Infrastructure and Event Stream">
   <div id="live-mini-popup" class="live-mini-popup hidden" role="dialog" aria-label="Live Infra and Event Stream">
     <div class="live-mini-head">
-      <span>Live Infra &amp; Stream</span>
+      <span>Live Stream &amp; Infra</span>
       <button type="button" class="btn btn-ghost btn-sm" style="padding: 2px 6px;" onclick="toggleLiveMiniPopup(false)" aria-label="Close live stream popup">✕</button>
     </div>
-    <div class="live-mini-section">
+    <div class="live-mini-section live-mini-section-stream">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+        <span style="font-size: 12.5px; font-weight: 600; color: var(--text);">Event Stream</span>
+        <a href="/store" target="_blank" style="font-size: 12px;">Open /store ↗</a>
+      </div>
+      <div class="live-mini-events" id="mini-events-list">
+        <div style="font-size: 12.5px; color: var(--muted);">No events streamed yet.</div>
+      </div>
+    </div>
+    <div class="live-mini-section" style="background: var(--surface-subtle);">
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
         <span style="font-size: 12px; font-weight: 600; color: var(--text-secondary);">Target (:8001)</span>
         <a href="/infra" target="_blank" style="font-size: 12px;">Open /infra ↗</a>
@@ -247,15 +256,6 @@
         <span id="mini-target-status" class="badge badge-neutral">checking…</span>
         <span id="mini-target-mode" class="badge badge-info">normal</span>
         <span id="mini-target-deps" class="mono" style="font-size: 12px; color: var(--muted);">0 active</span>
-      </div>
-    </div>
-    <div class="live-mini-section">
-      <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
-        <span style="font-size: 12px; font-weight: 600; color: var(--text-secondary);">Event Stream</span>
-        <a href="/store" target="_blank" style="font-size: 12px;">Open /store ↗</a>
-      </div>
-      <div class="live-mini-events" id="mini-events-list">
-        <div style="font-size: 12px; color: var(--muted);">No events streamed yet.</div>
       </div>
     </div>
   </div>
@@ -1209,7 +1209,7 @@
       list.innerHTML = '<div style="font-size: 12px; color: var(--muted);">No events streamed yet.</div>';
       return;
     }
-    list.innerHTML = [...evs].reverse().slice(0, 6).map((ev) => `
+    list.innerHTML = [...evs].reverse().slice(0, 25).map((ev) => `
       <div class="live-mini-ev">
         <div class="mono" style="font-weight: 600; color: var(--text);">${FinishLineLiveRun.escapeHtml(ev.step_key || "")} · ${FinishLineLiveRun.escapeHtml(ev.event_type || "")}</div>
         <div style="color: var(--text-secondary);">${FinishLineLiveRun.escapeHtml(ev.message || "")}</div>

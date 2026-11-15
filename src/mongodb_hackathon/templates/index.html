@@ -115,7 +115,10 @@
           <button type="button" data-pacing="step" onclick="setPacing('step')">Step-by-Step</button>
         </div>
       </div>
-      <button id="btn-run-closer" class="btn btn-primary" style="padding: 10px 20px; font-size: 14px; font-weight: 600;" onclick="startRun()">Run Config Agent</button>
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+        <span id="composer-lock-hint" class="composer-lock-hint hidden">Click <strong>+ New Run</strong> below to configure another run.</span>
+        <button id="btn-run-closer" class="btn btn-primary" style="padding: 10px 20px; font-size: 14px; font-weight: 600;" onclick="startRun()">Run Config Agent</button>
+      </div>
     </div>
   </section>
 
@@ -155,6 +158,17 @@
           <input type="checkbox" id="chk-auto-respawn" onchange="toggleAutoRespawn(this.checked)" />
           Auto-Respawn (3s)
         </label>
+      </div>
+    </div>
+
+    <!-- Run Progress / Loader Bar -->
+    <div id="run-loader-wrap" class="run-loader hidden" aria-live="polite">
+      <div class="run-loader-head">
+        <span id="run-loader-label" class="run-loader-label">Starting Config Agent…</span>
+        <span id="run-loader-meta" class="run-loader-meta mono">0 / 5 steps</span>
+      </div>
+      <div class="run-loader-track" role="progressbar" aria-valuemin="0" aria-valuemax="5" aria-valuenow="0" id="run-loader-progressbar">
+        <div id="run-loader-bar" class="run-loader-bar"></div>
       </div>
     </div>
 
@@ -326,7 +340,77 @@
     return FinishLineLiveRun.badgeClass(status);
   }
 
+  let isComposerLocked = false;
+
+  function setComposerLocked(locked, buttonLabel = "Run Config Agent", { spinning = false } = {}) {
+    isComposerLocked = Boolean(locked);
+    const card = document.querySelector(".composer-card");
+    if (card) card.classList.toggle("is-locked", isComposerLocked);
+
+    const hint = document.getElementById("composer-lock-hint");
+    if (hint) hint.classList.toggle("hidden", !isComposerLocked);
+
+    if (isComposerLocked) {
+      toggleAddRepo(false);
+    }
+
+    const selectors = [
+      "#repo-select",
+      "#btn-toggle-add-repo",
+      "#prompt-input",
+      ".knob-pill",
+      "#example-chips .chip",
+      "#pacing-control button",
+      "#add-repo-form input",
+      "#add-repo-form button",
+    ];
+    document.querySelectorAll(selectors.join(", ")).forEach((el) => {
+      el.disabled = isComposerLocked;
+    });
+
+    const runBtn = document.getElementById("btn-run-closer");
+    if (runBtn) {
+      runBtn.disabled = isComposerLocked;
+      if (isComposerLocked) {
+        runBtn.innerHTML = spinning
+          ? `<span class="btn-spinner" aria-hidden="true"></span><span>${escapeHtml(buttonLabel)}</span>`
+          : escapeHtml(buttonLabel);
+      } else {
+        runBtn.textContent = "Run Config Agent";
+      }
+    }
+  }
+
+  function updateRunLoader({ visible, label, meta, pct, stateClass, stepCount = 0 } = {}) {
+    const wrap = document.getElementById("run-loader-wrap");
+    const labelEl = document.getElementById("run-loader-label");
+    const metaEl = document.getElementById("run-loader-meta");
+    const barEl = document.getElementById("run-loader-bar");
+    const pbEl = document.getElementById("run-loader-progressbar");
+    if (!wrap) return;
+
+    if (!visible) {
+      wrap.classList.add("hidden");
+      if (barEl) {
+        barEl.style.width = "0%";
+        barEl.className = "run-loader-bar";
+      }
+      if (pbEl) pbEl.setAttribute("aria-valuenow", "0");
+      return;
+    }
+
+    wrap.classList.remove("hidden");
+    if (labelEl && label !== undefined) labelEl.textContent = label;
+    if (metaEl && meta !== undefined) metaEl.textContent = meta;
+    if (barEl) {
+      barEl.className = "run-loader-bar" + (stateClass ? ` ${stateClass}` : "");
+      if (pct !== undefined) barEl.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    }
+    if (pbEl) pbEl.setAttribute("aria-valuenow", String(stepCount));
+  }
+
   function setPacing(preset) {
+    if (isComposerLocked) return;
     const buttons = document.querySelectorAll("#pacing-control button");
     buttons.forEach((b) => b.classList.remove("active"));
     const activeBtn = document.querySelector(`#pacing-control button[data-pacing="${preset}"]`);
@@ -437,6 +521,7 @@
   };
 
   function setKnob(group, value) {
+    if (isComposerLocked) return;
     knobState[group] = value;
     document.querySelectorAll(`.knob-pill[data-knob-group="${group}"]`).forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.knobVal === value);
@@ -472,6 +557,7 @@
   }
 
   function selectChip(element, promptText, issueNum, issueTitle) {
+    if (isComposerLocked) return;
     const textarea = document.getElementById("prompt-input");
     if (textarea) {
       textarea.value = promptText;
@@ -520,6 +606,7 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "chip";
+      btn.disabled = isComposerLocked;
       btn.innerHTML = `${item.prefix ? `${item.prefix} ` : ""}<span>${escapeHtml(item.label)}</span>`;
       btn.addEventListener("click", () => {
         selectChip(btn, item.prompt, item.issueNum, item.issueTitle);
@@ -628,6 +715,58 @@
     }
 
     const status = String(run.status || "").toLowerCase();
+    const totalSteps = VERIFICATION_STEPS.length;
+    const completedSteps = VERIFICATION_STEPS.filter((vStep) =>
+      checkpoints.some((c) => (c.step_key === vStep.key || c.step_seq === vStep.seq) && c.status === "verified_took_effect")
+    ).length;
+
+    if (status === "running" && !run.step_paused) {
+      setComposerLocked(true, "Agent Running…", { spinning: true });
+      const activeStepSeq = Math.min(totalSteps, (run.current_step || 0) + 1);
+      const activeStepObj = VERIFICATION_STEPS.find((s) => s.seq === activeStepSeq);
+      const pct = Math.max(12, Math.round((completedSteps / totalSteps) * 100));
+      updateRunLoader({
+        visible: true,
+        label: activeStepObj ? `Executing Step ${activeStepSeq} of ${totalSteps}: ${activeStepObj.title}…` : "Executing Config Agent…",
+        meta: `${completedSteps} / ${totalSteps} steps verified`,
+        pct,
+        stateClass: "is-running",
+        stepCount: completedSteps,
+      });
+    } else if (run.step_paused || status === "awaiting_approval") {
+      setComposerLocked(true, status === "awaiting_approval" ? "Awaiting Approval…" : "Paused at Checkpoint…", { spinning: false });
+      const pct = Math.max(12, Math.round((completedSteps / totalSteps) * 100));
+      updateRunLoader({
+        visible: true,
+        label: status === "awaiting_approval" ? "Awaiting human approval to continue…" : `Paused at Step ${run.paused_after_step || run.current_step || 1} checkpoint`,
+        meta: `${completedSteps} / ${totalSteps} steps verified`,
+        pct,
+        stateClass: "is-paused",
+        stepCount: completedSteps,
+      });
+    } else if (status === "completed") {
+      setComposerLocked(true, "Run Completed · Click + New Run", { spinning: false });
+      updateRunLoader({
+        visible: true,
+        label: "Config Agent run completed",
+        meta: `${totalSteps} / ${totalSteps} steps verified`,
+        pct: 100,
+        stateClass: "is-completed",
+        stepCount: totalSteps,
+      });
+    } else {
+      setComposerLocked(true, "Run Stopped · Click + New Run", { spinning: false });
+      const pct = Math.max(10, Math.round((completedSteps / totalSteps) * 100));
+      updateRunLoader({
+        visible: true,
+        label: `Run ${formatStatus(run.status)}`,
+        meta: `${completedSteps} / ${totalSteps} steps verified`,
+        pct,
+        stateClass: "is-danger",
+        stepCount: completedSteps,
+      });
+    }
+
     const btnKill = document.getElementById("btn-kill");
     const btnResume = document.getElementById("btn-resume");
     const btnRollback = document.getElementById("btn-rollback");
@@ -851,7 +990,7 @@
         }
 
         return `
-          <div class="step-row">
+          <div class="step-row${isCurrent ? ' is-running' : ''}">
             <div class="step-top">
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span class="step-title">${vStep.seq}. ${escapeHtml(vStep.title)}</span>
@@ -889,6 +1028,8 @@
     currentRunId = "";
     currentRunRepo = "";
     lastRenderedPlanId = "";
+    setComposerLocked(false);
+    updateRunLoader({ visible: false });
     const sel = document.getElementById("run-selector");
     if (sel) sel.value = "";
 
@@ -959,12 +1100,15 @@
     unlockBriefingAudio();
     const feedbackEl = document.getElementById("voice-decision-feedback");
     if (feedbackEl) feedbackEl.classList.add("hidden");
-    const runBtn = document.getElementById("btn-run-closer");
-    const origBtnText = runBtn ? runBtn.textContent : "Run Config Agent";
-    if (runBtn) {
-      runBtn.disabled = true;
-      runBtn.textContent = "Starting…";
-    }
+    setComposerLocked(true, "Starting…", { spinning: true });
+    updateRunLoader({
+      visible: true,
+      label: "Starting Config Agent worker…",
+      meta: "0 / 5 steps verified",
+      pct: 12,
+      stateClass: "is-running",
+      stepCount: 0,
+    });
 
     try {
       const selRepo = document.getElementById("repo-select");
@@ -993,6 +1137,8 @@
       });
 
       if (!resp.ok) {
+        setComposerLocked(false);
+        updateRunLoader({ visible: false });
         alert("Failed to start run: " + resp.statusText);
         return;
       }
@@ -1017,11 +1163,10 @@
 
       connectStream(data.run_id);
       if (data.run) renderSnapshot({ run: data.run, checkpoints: [], events: [], target: {} });
-    } finally {
-      if (runBtn) {
-        runBtn.disabled = false;
-        runBtn.textContent = origBtnText;
-      }
+    } catch (err) {
+      setComposerLocked(false);
+      updateRunLoader({ visible: false });
+      throw err;
     }
   }
 

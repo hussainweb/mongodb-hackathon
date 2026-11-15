@@ -210,13 +210,23 @@
     <div id="approval-banner" class="approval-banner">
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
         <strong style="font-size: 13px;">Human Approval Required</strong>
-        <button class="btn btn-sm" id="record-btn" onclick="toggleRecording()">Speak Decision</button>
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <label style="font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 5px; cursor: pointer;" title="Automatically start listening after the voice briefing finishes and send after silence">
+            <input type="checkbox" id="chk-hands-free" onchange="onHandsFreeToggle(this.checked)" />
+            Auto-listen
+          </label>
+          <button type="button" class="btn btn-sm" id="record-btn" onclick="toggleRecording()">Speak Decision</button>
+        </div>
       </div>
       <div id="audio-container" style="font-size: 12.5px; color: var(--muted);"></div>
+      <div id="audio-autoplay-hint" class="hidden" style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--warn-text, #92400e);">
+        <span>Browser blocked autoplay.</span>
+        <button type="button" class="btn btn-sm" onclick="playBriefingManually()">Play Voice Briefing</button>
+      </div>
       <audio id="briefing-audio" controls style="width: 100%; display: none;"></audio>
       <div style="display: flex; gap: 8px;">
         <input id="approval-note" type="text" placeholder="Approval note (e.g. Canary green, proceed to merge)" style="flex: 1;" />
-        <button class="btn btn-ok btn-sm" onclick="approveText()">Approve &amp; Continue</button>
+        <button type="button" class="btn btn-ok btn-sm" onclick="approveText()">Approve &amp; Continue</button>
       </div>
       <div id="record-status" style="font-size: 12px; color: var(--muted);"></div>
     </div>
@@ -286,6 +296,11 @@
   let eventSource = null;
   let mediaRecorder = null;
   let audioChunks = [];
+  let activeMicStream = null;
+  let vadRafId = null;
+  let vadAudioCtx = null;
+  let voiceUnlocked = false;
+  let lastPlayedAudioUrl = "";
   let cachedIssues = {{ issues | tojson | safe }};
   let cachedRepos = {{ repos | tojson | safe }};
 
@@ -669,25 +684,37 @@
 
     // Human Approval Banner
     const approvalBanner = document.getElementById("approval-banner");
-    const audioEvent = events.find((e) => e.details && e.details.audio_url);
+    const audioEvent = [...events].reverse().find((e) => e.details && e.details.audio_url);
     const audioEl = document.getElementById("briefing-audio");
     const audioContainer = document.getElementById("audio-container");
+    const autoplayHint = document.getElementById("audio-autoplay-hint");
     if (approvalBanner) {
       if (status === "awaiting_approval") {
         approvalBanner.classList.add("visible");
         if (audioContainer) audioContainer.textContent = run.voice_briefing_text || "Confirm adaptation to continue deployment.";
+        const audioUrl = (audioEvent && audioEvent.details.audio_url) || run.voice_audio_path || "";
         if (audioEl) {
-          if (audioEvent && audioEvent.details.audio_url) {
-            if (audioEl.getAttribute("src") !== audioEvent.details.audio_url) {
-              audioEl.setAttribute("src", audioEvent.details.audio_url);
+          if (audioUrl) {
+            if (audioEl.getAttribute("src") !== audioUrl) {
+              audioEl.setAttribute("src", audioUrl);
             }
             audioEl.style.display = "block";
+            if (lastPlayedAudioUrl !== audioUrl) {
+              lastPlayedAudioUrl = audioUrl;
+              tryAutoplayBriefing(audioEl);
+            }
           } else {
             audioEl.style.display = "none";
+            if (autoplayHint) autoplayHint.classList.add("hidden");
           }
         }
       } else {
         approvalBanner.classList.remove("visible");
+        if (autoplayHint) autoplayHint.classList.add("hidden");
+        if (audioEl && !audioEl.paused) {
+          audioEl.pause();
+        }
+        lastPlayedAudioUrl = "";
       }
     }
 
@@ -927,6 +954,7 @@
   }
 
   async function startRun() {
+    unlockBriefingAudio();
     const runBtn = document.getElementById("btn-run-closer");
     const origBtnText = runBtn ? runBtn.textContent : "Run Config Agent";
     if (runBtn) {
@@ -1113,32 +1141,293 @@
     });
   }
 
-  async function toggleRecording() {
-    if (!currentRunId) return;
-    const status = document.getElementById("record-status");
-    const btn = document.getElementById("record-btn");
-    if (mediaRecorder && mediaRecorder.state === "recording") {
-      mediaRecorder.stop();
-      btn.textContent = "Speak Decision";
-      status.textContent = "Transcribing via Scribe v2…";
+  const SILENT_WAV_DATA_URI = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+
+  function unlockBriefingAudio() {
+    if (voiceUnlocked) return;
+    const audioEl = document.getElementById("briefing-audio");
+    if (!audioEl) return;
+    // Only prime when no real briefing is currently loaded
+    const currentSrc = audioEl.getAttribute("src") || "";
+    if (currentSrc && !currentSrc.startsWith("data:")) {
+      voiceUnlocked = true;
       return;
     }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioChunks = [];
-    mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
-    mediaRecorder.onstop = async () => {
-      const blob = new Blob(audioChunks, { type: "audio/webm" });
-      const form = new FormData();
-      form.append("audio", blob, "operator.webm");
-      const resp = await fetch(`/runs/${currentRunId}/approve`, { method: "POST", body: form });
-      const data = await resp.json();
-      status.textContent = `Heard: "${data.transcript || ""}"`;
-      stream.getTracks().forEach((t) => t.stop());
+    try {
+      audioEl.src = SILENT_WAV_DATA_URI;
+      const playPromise = audioEl.play();
+      if (playPromise && typeof playPromise.then === "function") {
+        playPromise.then(() => {
+          audioEl.pause();
+          audioEl.currentTime = 0;
+          audioEl.removeAttribute("src");
+          voiceUnlocked = true;
+        }).catch(() => {
+          audioEl.removeAttribute("src");
+        });
+      }
+    } catch (_) {
+      audioEl.removeAttribute("src");
+    }
+  }
+
+  function tryAutoplayBriefing(audioEl) {
+    const autoplayHint = document.getElementById("audio-autoplay-hint");
+    audioEl.onended = () => {
+      const handsFree = document.getElementById("chk-hands-free");
+      if (handsFree && handsFree.checked && (!mediaRecorder || mediaRecorder.state !== "recording")) {
+        startRecording({ autoStopOnSilence: true });
+      }
     };
-    mediaRecorder.start();
-    btn.textContent = "Stop & Send";
-    status.textContent = "Recording…";
+    const playPromise = audioEl.play();
+    if (playPromise && typeof playPromise.then === "function") {
+      playPromise.then(() => {
+        voiceUnlocked = true;
+        if (autoplayHint) autoplayHint.classList.add("hidden");
+      }).catch((err) => {
+        if (autoplayHint && err && err.name === "NotAllowedError") {
+          autoplayHint.classList.remove("hidden");
+        }
+      });
+    }
+  }
+
+  function playBriefingManually() {
+    const audioEl = document.getElementById("briefing-audio");
+    const autoplayHint = document.getElementById("audio-autoplay-hint");
+    if (!audioEl) return;
+    audioEl.play().then(() => {
+      voiceUnlocked = true;
+      if (autoplayHint) autoplayHint.classList.add("hidden");
+    }).catch((err) => {
+      const status = document.getElementById("record-status");
+      if (status) status.textContent = `Could not play briefing audio: ${err.message || err.name}`;
+    });
+  }
+
+  async function onHandsFreeToggle(enabled) {
+    unlockBriefingAudio();
+    const status = document.getElementById("record-status");
+    if (!enabled) return;
+    const stream = await requestMicStream(status);
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop());
+      if (status) status.textContent = "Microphone ready. Will auto-listen after briefing.";
+    } else {
+      const chk = document.getElementById("chk-hands-free");
+      if (chk) chk.checked = false;
+    }
+  }
+
+  function stopVad() {
+    if (vadRafId !== null) {
+      cancelAnimationFrame(vadRafId);
+      vadRafId = null;
+    }
+    if (vadAudioCtx) {
+      vadAudioCtx.close().catch(() => {});
+      vadAudioCtx = null;
+    }
+  }
+
+  function stopActiveMicStream() {
+    if (activeMicStream) {
+      activeMicStream.getTracks().forEach((t) => t.stop());
+      activeMicStream = null;
+    }
+  }
+
+  function pickRecorderMimeType() {
+    if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
+      return "";
+    }
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/mp4",
+      "audio/ogg;codecs=opus",
+    ];
+    return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+  }
+
+  function extensionForMime(mimeType) {
+    if (!mimeType) return "webm";
+    if (mimeType.includes("mp4")) return "mp4";
+    if (mimeType.includes("ogg")) return "ogg";
+    return "webm";
+  }
+
+  async function requestMicStream(statusEl) {
+    if (!window.isSecureContext) {
+      if (statusEl) {
+        statusEl.textContent =
+          "Microphone blocked: browser requires HTTPS or http://localhost / http://127.0.0.1 (current URL is not a secure context).";
+      }
+      return null;
+    }
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+      if (statusEl) {
+        statusEl.textContent = "Microphone capture is not supported in this browser.";
+      }
+      return null;
+    }
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      if (statusEl) {
+        if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+          statusEl.textContent = "Microphone permission denied. Allow microphone access in your browser site settings and retry.";
+        } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+          statusEl.textContent = "No microphone detected. Connect a microphone and try again.";
+        } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+          statusEl.textContent = "Microphone is busy or unavailable (check if another app is using it).";
+        } else {
+          statusEl.textContent = `Microphone error (${err.name || "Error"}): ${err.message || "Unable to access microphone"}`;
+        }
+      }
+      return null;
+    }
+  }
+
+  function startSilenceDetection(stream, onSilence) {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    try {
+      vadAudioCtx = new AudioCtx();
+      const source = vadAudioCtx.createMediaStreamSource(stream);
+      const analyser = vadAudioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+
+      const samples = new Uint8Array(analyser.fftSize);
+      let heardSpeech = false;
+      let silenceStart = 0;
+      const startTime = performance.now();
+      const SPEECH_THRESHOLD = 0.025;
+      const SILENCE_HOLD_MS = 1600;
+      const MAX_RECORD_MS = 20000;
+
+      const tick = () => {
+        if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+        analyser.getByteTimeDomainData(samples);
+        let sumSq = 0;
+        for (let i = 0; i < samples.length; i++) {
+          const norm = (samples[i] - 128) / 128;
+          sumSq += norm * norm;
+        }
+        const rms = Math.sqrt(sumSq / samples.length);
+        const now = performance.now();
+
+        if (rms > SPEECH_THRESHOLD) {
+          heardSpeech = true;
+          silenceStart = 0;
+        } else if (heardSpeech) {
+          if (!silenceStart) silenceStart = now;
+          if (now - silenceStart >= SILENCE_HOLD_MS) {
+            onSilence();
+            return;
+          }
+        }
+        if (now - startTime >= MAX_RECORD_MS) {
+          onSilence();
+          return;
+        }
+        vadRafId = requestAnimationFrame(tick);
+      };
+      vadRafId = requestAnimationFrame(tick);
+    } catch (_) {
+      stopVad();
+    }
+  }
+
+  async function startRecording({ autoStopOnSilence = false } = {}) {
+    const status = document.getElementById("record-status");
+    const btn = document.getElementById("record-btn");
+    if (!currentRunId) {
+      if (status) status.textContent = "No active run selected.";
+      return;
+    }
+
+    unlockBriefingAudio();
+    const audioEl = document.getElementById("briefing-audio");
+    if (audioEl && !audioEl.paused) {
+      audioEl.pause();
+    }
+
+    if (typeof MediaRecorder === "undefined") {
+      if (status) status.textContent = "Audio recording (MediaRecorder) is not supported in this browser.";
+      return;
+    }
+
+    if (status) status.textContent = "Requesting microphone access…";
+    const stream = await requestMicStream(status);
+    if (!stream) return;
+
+    activeMicStream = stream;
+    audioChunks = [];
+    const mimeType = pickRecorderMimeType();
+    try {
+      mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    } catch (err) {
+      stopActiveMicStream();
+      if (status) status.textContent = `Could not start recorder: ${err.message || err.name}`;
+      return;
+    }
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) audioChunks.push(e.data);
+    };
+    mediaRecorder.onstop = async () => {
+      stopVad();
+      stopActiveMicStream();
+      if (btn) btn.textContent = "Speak Decision";
+
+      const actualMime = (mediaRecorder && mediaRecorder.mimeType) || mimeType || "audio/webm";
+      const blob = new Blob(audioChunks, { type: actualMime });
+      if (blob.size === 0) {
+        if (status) status.textContent = "No audio captured. Please try speaking again.";
+        return;
+      }
+
+      if (status) status.textContent = "Transcribing via Scribe v2…";
+      const form = new FormData();
+      form.append("audio", blob, `operator.${extensionForMime(actualMime)}`);
+      try {
+        const resp = await fetch(`/runs/${currentRunId}/approve`, { method: "POST", body: form });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          if (status) status.textContent = `Voice approval failed: ${data.detail || resp.statusText}`;
+          return;
+        }
+        if (status) status.textContent = `Heard: "${data.transcript || ""}"`;
+      } catch (err) {
+        if (status) status.textContent = `Network error sending audio: ${err.message || err}`;
+      }
+    };
+
+    mediaRecorder.start(250);
+    if (btn) btn.textContent = "Stop & Send";
+    if (status) {
+      status.textContent = autoStopOnSilence
+        ? "Listening… speak now (auto-sends on pause, or click Stop & Send)."
+        : "Recording… speak now, then click Stop & Send.";
+    }
+    if (autoStopOnSilence) {
+      startSilenceDetection(stream, () => {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+          mediaRecorder.stop();
+        }
+      });
+    }
+  }
+
+  async function toggleRecording() {
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      mediaRecorder.stop();
+      return;
+    }
+    const handsFree = document.getElementById("chk-hands-free");
+    await startRecording({ autoStopOnSilence: Boolean(handsFree && handsFree.checked) });
   }
 
   // Initial boot

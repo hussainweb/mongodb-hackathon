@@ -46,7 +46,7 @@ from mongodb_hackathon.tofu_adapter import (
     launch_sample_baseline,
     stop_sample_baseline,
 )
-from mongodb_hackathon.voice import transcribe_operator_audio
+from mongodb_hackathon.voice import classify_voice_decision, transcribe_operator_audio
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = PACKAGE_DIR / "templates"
@@ -1106,6 +1106,7 @@ async def approve_run(
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
     approval_text = (note or "").strip()
+    is_voice = audio is not None
     if audio is not None:
         raw_bytes = await audio.read()
         approval_text = await asyncio.to_thread(
@@ -1118,11 +1119,24 @@ async def approve_run(
         "application/json"
     ):
         payload = ApproveRunRequest.model_validate(await request.json())
-        approval_text = payload.note
+        approval_text = payload.note.strip()
 
-    approval_text = approval_text or "Approved by operator"
-    lowered = approval_text.lower()
-    if any(word in lowered for word in ("abort", "halt", "rollback", "cancel", "stop")):
+    if is_voice:
+        decision, decision_label = classify_voice_decision(approval_text)
+    else:
+        if not approval_text:
+            approval_text = "Approved by operator"
+            decision = "approved"
+            decision_label = "Approval detected — continuing run."
+        else:
+            classified, label = classify_voice_decision(approval_text)
+            if classified == "rejected":
+                decision, decision_label = classified, label
+            else:
+                decision = "approved"
+                decision_label = "Approval detected — continuing run."
+
+    if decision == "rejected":
         await store.update_run(
             run_id,
             halt_requested=True,
@@ -1132,9 +1146,9 @@ async def approve_run(
             run_id,
             "step_3_deploy_and_verify",
             "voice_abort_received",
-            f"Operator instructed halt/rollback via voice: '{approval_text}'",
+            f"Operator instructed halt/rollback: '{approval_text}'",
         )
-    else:
+    elif decision == "approved":
         await store.update_run(
             run_id,
             approval_granted=True,
@@ -1146,10 +1160,17 @@ async def approve_run(
             "operator_approved",
             f"Operator approved gate: '{approval_text}'",
         )
+    else:
+        await store.emit_event(
+            run_id,
+            "step_3_deploy_and_verify",
+            "voice_unclear",
+            f"Approval not detected from voice input: '{approval_text}'",
+        )
 
     # Ensure a worker is alive to act on the decision if previously crashed
     refreshed = await store.get_run(run_id)
-    if refreshed and refreshed.status == RunStatus.CRASHED:
+    if decision != "not_detected" and refreshed and refreshed.status == RunStatus.CRASHED:
         pid = _spawn_worker_process(run_id, step_delay=0.6)
         await store.update_run(run_id, status=RunStatus.RUNNING.value, worker_pid=pid)
 
@@ -1158,6 +1179,8 @@ async def approve_run(
         {
             "run_id": run_id,
             "transcript": approval_text,
+            "decision": decision,
+            "decision_label": decision_label,
             "run": final_run.model_dump(mode="json") if final_run else None,
         }
     )

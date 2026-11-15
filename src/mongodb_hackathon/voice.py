@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import re
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from elevenlabs import ElevenLabs
@@ -60,3 +62,40 @@ def transcribe_operator_audio(
         model_id=cfg.elevenlabs_stt_model,
     )
     return str(getattr(result, "text", "") or "").strip()
+
+
+VoiceDecision = Literal["approved", "rejected", "not_detected"]
+
+_NEGATED_APPROVAL_RE = re.compile(
+    r"\b(?:do\s+not|don't|dont|not|never|no)\s+"
+    r"(?:approve|approved|proceed|continue|confirm|go\s+ahead|ship\s+it|do\s+it)\b",
+    re.IGNORECASE,
+)
+_REJECTION_RE = re.compile(
+    r"\b(?:abort|halt|rollback|roll\s+back|cancel|stop|reject|rejected|deny|denied|"
+    r"decline|declined|disapprove|disapproved|no|nope|negative)\b",
+    re.IGNORECASE,
+)
+_APPROVAL_RE = re.compile(
+    r"\b(?:approve|approved|yes|yeah|yep|proceed|continue|confirm|confirmed|"
+    r"go\s+ahead|looks\s+good|lgtm|ship\s+it|green|okay|ok|do\s+it|affirmative)\b",
+    re.IGNORECASE,
+)
+
+
+def classify_voice_decision(transcript: str) -> tuple[VoiceDecision, str]:
+    """Classify an operator's spoken transcript as approved, rejected, or not_detected."""
+    text = (transcript or "").strip()
+    if not text:
+        return (
+            "not_detected",
+            "Approval not detected — say 'approve' to continue or 'cancel' to halt.",
+        )
+    if _NEGATED_APPROVAL_RE.search(text) or _REJECTION_RE.search(text):
+        return ("rejected", "Rejection detected — halting run.")
+    if _APPROVAL_RE.search(text):
+        return ("approved", "Approval detected — continuing run.")
+    return (
+        "not_detected",
+        "Approval not detected — say 'approve' to continue or 'cancel' to halt.",
+    )

@@ -62,3 +62,24 @@ def test_voice_helpers_pass_configured_models(
     stt_call = captured["stt"]
     assert isinstance(stt_call, dict)
     assert stt_call["model_id"] == "scribe_v2"
+
+
+@pytest.mark.parametrize(
+    ("transcript", "expected_decision"),
+    [
+        ("I approve, go ahead", "approved"),
+        ("Yes, proceed with deployment", "approved"),
+        ("LGTM, ship it", "approved"),
+        ("I do not approve", "rejected"),
+        ("Don't approve this", "rejected"),
+        ("No, cancel and rollback", "rejected"),
+        ("Halt the deployment", "rejected"),
+        ("Wait what did you say?", "not_detected"),
+        ("", "not_detected"),
+    ],
+)
+def test_classify_voice_decision(transcript: str, expected_decision: str) -> None:
+    """Verify voice decision classifier distinguishes approvals, negations, and unclear speech."""
+    decision, label = voice.classify_voice_decision(transcript)
+    assert decision == expected_decision
+    assert label

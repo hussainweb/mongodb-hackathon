@@ -226,7 +226,7 @@
         <strong style="font-size: 13px;">Human Approval Required</strong>
         <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
           <label style="font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 5px; cursor: pointer;" title="Automatically start listening after the voice briefing finishes and send after silence">
-            <input type="checkbox" id="chk-hands-free" onchange="onHandsFreeToggle(this.checked)" />
+            <input type="checkbox" id="chk-hands-free" checked onchange="onHandsFreeToggle(this.checked)" />
             Auto-listen
           </label>
           <button type="button" class="btn btn-sm" id="record-btn" onclick="toggleRecording()">Speak Decision</button>
@@ -239,7 +239,7 @@
       </div>
       <audio id="briefing-audio" controls style="width: 100%; display: none;"></audio>
       <div style="display: flex; gap: 8px;">
-        <input id="approval-note" type="text" placeholder="Approval note (e.g. Canary green, proceed to merge)" style="flex: 1;" />
+        <input id="approval-note" type="text" placeholder='Authorization code or note (e.g. "Authorization Picard Alpha 1 Gamma Vulcan Spock")' style="flex: 1;" />
         <button type="button" class="btn btn-ok btn-sm" onclick="approveText()">Approve &amp; Continue</button>
       </div>
       <div id="record-status" style="font-size: 12px; color: var(--muted);"></div>
@@ -317,6 +317,7 @@
   let vadAudioCtx = null;
   let voiceUnlocked = false;
   let lastPlayedAudioUrl = "";
+  let autoListenedForGate = false;
   let cachedIssues = {{ issues | tojson | safe }};
   let cachedRepos = {{ repos | tojson | safe }};
 
@@ -847,6 +848,11 @@
           } else {
             audioEl.style.display = "none";
             if (autoplayHint) autoplayHint.classList.add("hidden");
+            const handsFree = document.getElementById("chk-hands-free");
+            if (handsFree && handsFree.checked && !autoListenedForGate && (!mediaRecorder || mediaRecorder.state !== "recording")) {
+              autoListenedForGate = true;
+              startRecording({ autoStopOnSilence: true });
+            }
           }
         }
       } else {
@@ -856,6 +862,7 @@
           audioEl.pause();
         }
         lastPlayedAudioUrl = "";
+        autoListenedForGate = false;
       }
     }
 
@@ -1098,6 +1105,12 @@
 
   async function startRun() {
     unlockBriefingAudio();
+    const handsFree = document.getElementById("chk-hands-free");
+    if (handsFree && handsFree.checked && window.isSecureContext && navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function") {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then((stream) => stream.getTracks().forEach((t) => t.stop()))
+        .catch(() => {});
+    }
     const feedbackEl = document.getElementById("voice-decision-feedback");
     if (feedbackEl) feedbackEl.classList.add("hidden");
     setComposerLocked(true, "Starting…", { spinning: true });

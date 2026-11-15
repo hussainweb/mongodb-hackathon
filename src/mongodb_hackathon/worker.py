@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import re
 from contextlib import suppress
@@ -228,8 +227,8 @@ async def _execute_opentofu_step3(
         chaos_mode == "require_approval_gate" or env_tier == "production"
     ):
         brief = (
-            f"Release {run_id} hit policy approval gate for OpenTofu deployment "
-            f"of {service_name} ({desired_workers} workers in {env_tier}). Say approve to apply."
+            f"Hey, {service_name} is ready to deploy {desired_workers} workers to {env_tier}. "
+            "Give your authorization code to go ahead."
         )
         approved = await _wait_for_operator_approval(db_store, run_id, brief, cfg)
         if not approved:
@@ -434,8 +433,8 @@ async def _execute_http_step3(
         )
         if gate_active:
             brief = (
-                f"Release {run_id} hit policy approval gate on target service "
-                f"for {v1_payload['service_name']}. Say approve to continue deployment."
+                f"Hey, {v1_payload['service_name']} needs your go-ahead to deploy. "
+                "Give your authorization code to continue."
             )
             approved = await _wait_for_operator_approval(db_store, run_id, brief, cfg)
             if not approved:
@@ -485,9 +484,8 @@ async def _execute_http_step3(
                 adapt_plan.needs_human_confirmation or adapt_plan.confidence < 0.75
             ):
                 brief = (
-                    f"Release {run_id} hit API schema drift on target service. "
-                    f"Proposed mapping: {json.dumps(adapt_plan.field_mapping)}. "
-                    "Say approve to continue deployment."
+                    f"Hey, {v1_payload['service_name']} changed its API schema, and I've mapped the new fields. "
+                    "Give your authorization code to continue."
                 )
                 approved = await _wait_for_operator_approval(db_store, run_id, brief, cfg)
                 if not approved:

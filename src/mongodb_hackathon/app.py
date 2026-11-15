@@ -46,7 +46,11 @@ from mongodb_hackathon.tofu_adapter import (
     launch_sample_baseline,
     stop_sample_baseline,
 )
-from mongodb_hackathon.voice import classify_voice_decision, transcribe_operator_audio
+from mongodb_hackathon.voice import (
+    classify_voice_decision,
+    ensure_star_trek_auth_code,
+    transcribe_operator_audio,
+)
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = PACKAGE_DIR / "templates"
@@ -1121,20 +1125,25 @@ async def approve_run(
         payload = ApproveRunRequest.model_validate(await request.json())
         approval_text = payload.note.strip()
 
+    auth_code = ""
     if is_voice:
         decision, decision_label = classify_voice_decision(approval_text)
+        if decision == "approved":
+            auth_code = ensure_star_trek_auth_code(approval_text)
     else:
         if not approval_text:
-            approval_text = "Approved by operator"
+            auth_code = ensure_star_trek_auth_code("")
+            approval_text = auth_code
             decision = "approved"
-            decision_label = "Approval detected — continuing run."
+            decision_label = f"Approval detected ({auth_code}) — continuing run."
         else:
             classified, label = classify_voice_decision(approval_text)
             if classified == "rejected":
                 decision, decision_label = classified, label
             else:
+                auth_code = ensure_star_trek_auth_code(approval_text)
                 decision = "approved"
-                decision_label = "Approval detected — continuing run."
+                decision_label = f"Approval detected ({auth_code}) — continuing run."
 
     if decision == "rejected":
         await store.update_run(
@@ -1181,6 +1190,7 @@ async def approve_run(
             "transcript": approval_text,
             "decision": decision,
             "decision_label": decision_label,
+            "auth_code": auth_code,
             "run": final_run.model_dump(mode="json") if final_run else None,
         }
     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import random
 import re
 from pathlib import Path
 from typing import Literal
@@ -81,6 +82,61 @@ _APPROVAL_RE = re.compile(
     r"go\s+ahead|looks\s+good|lgtm|ship\s+it|green|okay|ok|do\s+it|affirmative)\b",
     re.IGNORECASE,
 )
+_STAR_TREK_EXPLICIT_AUTH_RE = re.compile(
+    r"\bauthorization\b(?:\s+[a-z0-9-]+){2,}",
+    re.IGNORECASE,
+)
+_STAR_TREK_NAME_RE = re.compile(
+    r"\b(?:picard|kirk|janeway|sisko|riker|spock|vulcan|vulkan|data|worf|uhura|"
+    r"laforge|crusher|troi|pike|burnham|sulu|chekov|scotty|mccoy|tuvok|dax|"
+    r"enterprise|defiant|voyager)\b",
+    re.IGNORECASE,
+)
+_STAR_TREK_CALLSIGN_RE = re.compile(
+    r"\b(?:alpha|beta|gamma|delta|epsilon|theta|omega|sigma|zeta|tango|foxtrot|"
+    r"\d+|one|two|three|four|five|six|seven|eight|nine|zero)\b",
+    re.IGNORECASE,
+)
+
+_ST_CAPTAINS = ("Picard", "Janeway", "Sisko", "Kirk", "Pike", "Riker")
+_ST_GREEK_PRIMARY = ("Alpha", "Beta", "Gamma", "Delta", "Omega", "Theta")
+_ST_GREEK_SECONDARY = ("Gamma", "Epsilon", "Sigma", "Zeta", "Tango")
+_ST_OFFICERS = (
+    "Vulcan Spock",
+    "Vulcan Tuvok",
+    "Android Data",
+    "Klingon Worf",
+    "Betazoid Troi",
+    "Trill Dax",
+)
+
+
+def is_star_trek_auth_code(text: str) -> bool:
+    """Return True if text looks like a Star Trek-style authorization code."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if _STAR_TREK_EXPLICIT_AUTH_RE.search(cleaned):
+        return True
+    return bool(_STAR_TREK_NAME_RE.search(cleaned) and _STAR_TREK_CALLSIGN_RE.search(cleaned))
+
+
+def generate_star_trek_auth_code() -> str:
+    """Generate a whimsical Star Trek-style authorization code."""
+    captain = random.choice(_ST_CAPTAINS)
+    greek1 = random.choice(_ST_GREEK_PRIMARY)
+    digit = random.randint(1, 9)
+    greek2 = random.choice(_ST_GREEK_SECONDARY)
+    officer = random.choice(_ST_OFFICERS)
+    return f"Authorization {captain} {greek1} {digit} {greek2} {officer}"
+
+
+def ensure_star_trek_auth_code(text: str) -> str:
+    """Return the operator's Star Trek code if present, otherwise generate one."""
+    cleaned = (text or "").strip()
+    if is_star_trek_auth_code(cleaned):
+        return cleaned
+    return generate_star_trek_auth_code()
 
 
 def classify_voice_decision(transcript: str) -> tuple[VoiceDecision, str]:
@@ -89,13 +145,16 @@ def classify_voice_decision(transcript: str) -> tuple[VoiceDecision, str]:
     if not text:
         return (
             "not_detected",
-            "Approval not detected — say 'approve' to continue or 'cancel' to halt.",
+            "Approval not detected — say 'approve' or your authorization code to continue, or 'cancel' to halt.",
         )
     if _NEGATED_APPROVAL_RE.search(text) or _REJECTION_RE.search(text):
         return ("rejected", "Rejection detected — halting run.")
+    if is_star_trek_auth_code(text):
+        return ("approved", f"Authorization code accepted ({text}) — continuing run.")
     if _APPROVAL_RE.search(text):
-        return ("approved", "Approval detected — continuing run.")
+        code = generate_star_trek_auth_code()
+        return ("approved", f"Approval detected ({code}) — continuing run.")
     return (
         "not_detected",
-        "Approval not detected — say 'approve' to continue or 'cancel' to halt.",
+        "Approval not detected — say 'approve' or your authorization code to continue, or 'cancel' to halt.",
     )

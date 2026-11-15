@@ -70,6 +70,9 @@ def test_voice_helpers_pass_configured_models(
         ("I approve, go ahead", "approved"),
         ("Yes, proceed with deployment", "approved"),
         ("LGTM, ship it", "approved"),
+        ("Authorization Picard Alpha 1 Gamma Vulcan Spock", "approved"),
+        ("Authorization Picard Alpha 1 Gamma Vulkan Spock", "approved"),
+        ("Picard Delta 4", "approved"),
         ("I do not approve", "rejected"),
         ("Don't approve this", "rejected"),
         ("No, cancel and rollback", "rejected"),
@@ -83,3 +86,14 @@ def test_classify_voice_decision(transcript: str, expected_decision: str) -> Non
     decision, label = voice.classify_voice_decision(transcript)
     assert decision == expected_decision
     assert label
+    if expected_decision == "approved":
+        assert "Authorization" in label
+
+
+def test_ensure_star_trek_auth_code() -> None:
+    """Verify Star Trek authorization codes are preserved or generated on approval."""
+    custom = "Authorization Picard Alpha 1 Gamma Vulkan Spock"
+    assert voice.ensure_star_trek_auth_code(custom) == custom
+    generated = voice.ensure_star_trek_auth_code("approve")
+    assert generated.startswith("Authorization ")
+    assert voice.is_star_trek_auth_code(generated)

@@ -116,7 +116,7 @@
         </div>
       </div>
       <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-        <span id="composer-lock-hint" class="composer-lock-hint hidden">Click <strong>+ New Run</strong> below to configure another run.</span>
+        <span id="composer-lock-hint" class="composer-lock-hint hidden">Run in progress — controls locked until finished.</span>
         <button id="btn-run-closer" class="btn btn-primary" style="padding: 10px 20px; font-size: 14px; font-weight: 600;" onclick="startRun()">Run Config Agent</button>
       </div>
     </div>
@@ -745,7 +745,7 @@
         stepCount: completedSteps,
       });
     } else if (status === "completed") {
-      setComposerLocked(true, "Run Completed · Click + New Run", { spinning: false });
+      setComposerLocked(false);
       updateRunLoader({
         visible: true,
         label: "Config Agent run completed",
@@ -755,7 +755,7 @@
         stepCount: totalSteps,
       });
     } else {
-      setComposerLocked(true, "Run Stopped · Click + New Run", { spinning: false });
+      setComposerLocked(false);
       const pct = Math.max(10, Math.round((completedSteps / totalSteps) * 100));
       updateRunLoader({
         visible: true,
